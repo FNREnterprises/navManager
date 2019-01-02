@@ -35,7 +35,7 @@ def evalDockingDetailMarkerPosition():
 
 
 
-
+"""
 def dock():
     '''
     request for docking
@@ -43,7 +43,7 @@ def dock():
     if not scan room for docking station
     '''
     if config.getDockingMarkerPosition() is None:
-        config.setTask("searchDockingMarker")
+        config.setTask("searchDockingMarker"
     else:
         # try to move cart to a position orthogonal in front of the dockingMarker
         markerPos, markerOrientation = config.getDockingMarkerPosition()
@@ -52,7 +52,7 @@ def dock():
         yCorr = config.DOCKING_START_DISTANCE_FROM_MARKER * np.sin(np.radians(markerOrientation))
         cartTargetPos = config.Point2D(markerPos.x + xCorr, markerPos.y - yCorr)
 
-    config.log("assume we are currently at a position showing the docking station marker")
+    config.log(f"assume we are currently at a position showing the docking station marker")
 
     # start with a request for the aruco task to take a cartcam image
     markerFound, distanceCamToMarker, xOffsetMarker, markerYawDegrees = lookForMarker("CART_CAM", config.DOCKING_MARKER_ID)
@@ -64,7 +64,7 @@ def dock():
         config.log(f"docking marker not found")
         config.setTask("notask")
         return
-
+"""
 
 def cartMovesDockingPhase1(distanceCamToMarker, xOffsetMarker, markerYawDegrees):
 
@@ -90,12 +90,13 @@ def cartMovesDockingPhase1(distanceCamToMarker, xOffsetMarker, markerYawDegrees)
 
     # cart target position is marker's orthogonal point at distance
     # use the offset to account for the x-difference of the docking detail marker center vs the docking marker center
-    cartTargetPos = point(markerCenterPos.x + xCorr + config.MARKER_XOFFSET_CORRECTION, markerCenterPos.y - yCorr)
+    config.oTarget.x = markerCenterPos.x + xCorr + config.MARKER_XOFFSET_CORRECTION
+    config.oTarget.y = markerCenterPos.y - yCorr
 
-    config.log(f"cartTargetPos (cartCenter) = {cartTargetPos.x:.0f},{cartTargetPos.y:.0f}")
+    config.log(f"cartTargetPos (cartCenter) = {config.oTarget.x:.0f},{config.oTarget.y:.0f}")
 
-    cartStartRotation = np.degrees(np.arctan((cartTargetPos.x - cartCenterPos.x) / (cartTargetPos.y - cartCenterPos.y)))
-    cartMove = 0.9 * np.hypot((cartTargetPos.x - cartCenterPos.x), (cartTargetPos.y - cartCenterPos.y))     # cart moved too far
+    cartStartRotation = np.degrees(np.arctan((config.oTarget.x - cartCenterPos.x) / (config.oTarget.y - cartCenterPos.y)))
+    cartMove = 0.9 * np.hypot((config.oTarget.x - cartCenterPos.x), (config.oTarget.y - cartCenterPos.y))     # cart moved too far
     cartEndRotation = -(np.degrees(np.arctan(xCorr / yCorr)) + cartStartRotation)
 
     config.log(f"cartStartRotation: {cartStartRotation:.0f}, cartMove: {cartMove:.0f}, cartEndRotation: {cartEndRotation:.0f}")
@@ -110,7 +111,7 @@ def cartMovesDockingPhase1(distanceCamToMarker, xOffsetMarker, markerYawDegrees)
         if abs(cartEndRotation) > 1:
             robotControl.rotateCartRelative(cartEndRotation, 150)   # blocking, raises cartException on failure
 
-        config.log("end rotation done")
+        config.log(f"end rotation done")
         #navGlobal.setTask("dockingPhase2")
 
         # we should see the docking detail marker now, if not move sideways and try to find it
@@ -190,7 +191,7 @@ def dockingPhase2():    # runs in scope of navManager
             # side move and correction of possibly occurring rotation offset
             if abs(distanceSideMove) > TOLERATED_CART_X_OFFSET:
 
-                startOrientation = config.getCartOrientation()
+                startOrientation = config.oCart.orientation
                 if distanceSideMove < 0:
                     config.log(f"side move for docking, distanceSideMove: {distanceSideMove:.0f}, move CART_MOVE_LEFT(4)")
                     robotControl.moveCartWithDirection(robotControl.CART_MOVE_LEFT, abs(distanceSideMove), MOVE_SPEED_DOCKING_PHASE_2)
@@ -199,7 +200,7 @@ def dockingPhase2():    # runs in scope of navManager
                     robotControl.moveCartWithDirection(robotControl.CART_MOVE_RIGHT, abs(distanceSideMove), MOVE_SPEED_DOCKING_PHASE_2)
 
                 # if side move changed orientation rotate back to be orthogonal to marker
-                rotationBySideMove = startOrientation - config.getCartOrientation()
+                rotationBySideMove = startOrientation - config.oCart.orientation
                 config.log(f"compensate for cart orientation change by side move: {rotationBySideMove:.0f}")
                 robotControl.rotateCartRelative(rotationBySideMove, ROTATION_SPEED_DOCKING_PHASE_2)    #blocking, raises cartException on failure
 
@@ -234,7 +235,7 @@ def dockingPhase3():
 
             robotControl.moveCartWithDirection(robotControl.FORWARD, 30, 80)
 
-            while config.isCartMoving():
+            while config.oCart.moving:
                 if config.isCartDocked():
                     robotControl.stopRobot("dockingPhase3 successful, cart is docked")
                     config.setTask("notask")

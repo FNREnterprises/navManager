@@ -1,19 +1,66 @@
 
 import time
-import os
-import sys
+from datetime import datetime as dt
+
 import logging
-import rpyc
-import xmlrpc.client
-
-from pyrecord import Record
 import numpy as np
+import cv2
+from collections import deque
 
-import simplejson as json
-import rpcReceive
-import rpcSend
+import navMap
 
-Point2D = Record.create_type("Point2D","x","y")
+# involved computers
+marvin = "192.168.0.17"
+pcjm = "192.168.0.14"
+
+# rpc
+MY_IP = pcjm
+MY_PORT = 20010
+
+# NOTE master for ip and ports is the taskOrchestrator
+# rpc connection with task orchestrator
+taskOrchestrator = None
+
+# Kinect must be started first, otherwise driver complains
+navManagerServers = { 'kinect':       {'simulated': False, 'startupTime': 15, 'startRequested': None, 'ip': marvin, 'port': 20003, 'conn': None,
+                                       'lifeSignalRequest': time.time(), 'lifeSignalReceived': time.time()+1},
+                      'aruco':        {'simulated': False, 'startupTime': 15, 'startRequested': None, 'ip': marvin, 'port': 20002, 'conn': None,
+                                       'lifeSignalRequest': time.time(), 'lifeSignalReceived': time.time()+1},
+                      'servoControl': {'simulated': False, 'startupTime': 25, 'startRequested': None, 'ip': marvin, 'port': 20004, 'conn': None,
+                                       'lifeSignalRequest': time.time(), 'lifeSignalReceived': time.time()+1},
+                      'cartControl':  {'simulated': False, 'startupTime': 20, 'startRequested': None, 'ip': marvin, 'port': 20001, 'conn': None,
+                                       'lifeSignalRequest': time.time(), 'lifeSignalReceived': time.time()+1}
+                      }
+
+
+# navMap
+addPartialMap = False
+addPartialMapDone = True
+
+# use navMap thread to take a cart pic
+takeCartcamImage = False
+takeCartcamImageDone = False
+takeCartcamImageSuccessful = False
+
+# use navMap thread to take a depth pic
+takeDepthImage = False
+takeDepthImageDone = False
+takeDepthImageSuccessful = False
+
+
+floorPlan = None
+floorPlanFat = None
+obstacleMap = None
+obstacleMapFat = None
+fullScanPlan = None
+
+scanLocations = []
+markerInfo = []
+
+robotMovesQueue = deque(maxlen=100)
+
+#servoCurrent = {'assigned', 'moving', 'detached', 'position', 'degrees', servoName}
+servoCurrent = {}
 
 
 DOCKING_MARKER_ID = 10
@@ -24,38 +71,57 @@ MARKER_XOFFSET_CORRECTION = -15     # distance docking cave - docking detail mar
 DOCKING_START_DISTANCE_FROM_MARKER = 600
 
 # list of possible tasks
-tasks = ["restartTasks",
+tasks = ["restartServers",
          "createFloorPlan",
+         "fullScanAtPosition",
+         "rover",
          "showEyecamImage",
          "showCartcamImage",
-         "showDepthImage",
+         "getDepthImage",
          "findMarker",
          "approachTarget",
-         "rover",
          "dock",
-         "stop"]
+         "stop",
+         "moveForward50",
+         "moveBackward50",
+         "moveHead",
+         "setPin41",
+         "clearPin41",
+         "exit"]
 
-#_task = "findMarker"
-_taskStack = []
 
-cartLocation = Point2D(0, 0)                #
-cartOrientation = 0
+taskStack = []
+task = None
 
-cartMoving = False
-cartRotating = False
-_cartBlocked = False
-_cartDocked = False
+#cartLocation = Point2D(0, 0)                #
+#cartOrientation = 0
 
-_targetLocation = Point2D(0,0)
-_targetOrientation = 0
+cartInfo = {'x': 0, 'y': 0, 'orientation': 0, 'moving:': False, 'rotating': False, 'blocked': False, 'docked': False, 'updateTime': time.time()}
+oCart = None
+
+# navManager local cart position correction, gets set by fullScanAtPosition and reset after sending it to the cart
+cartPositionCorrection = {'x': 0, 'y': 0, 'o': 0}
+
+target = {'x': 0, 'y': 0, 'orientation': 0, 'show': False}
+oTarget = None
+
+leftArm = {'omoplate': 0, 'shoulder': 0, 'rotate': 0, 'bicep': 0}
+oLeftArm = None
+
+rightArm = {'omoplate': 0, 'shoulder': 0, 'rotate': 0, 'bicep': 0}
+oRightArm = None
+
+head = {}
+oHead =  None
+
 
 # base folder for room information
 PATH_ROOM_DATA = "D:/Projekte/InMoov/navManager/ROOMS"
-_room = 'unknown'
-_fullScanDone = False
+room = 'unknown'
+fullScanDone = False
+fullScanResult = np.zeros((navMap.MAP_WIDTH, navMap.MAP_HEIGHT), dtype=np.uint8)
 
 # positions where a 360 view has been made and recorded
-_scanLocations = []
 _dockingMarkerPosition = None    # position and orientation that showed the docking marker
 
 _arucoMarkers = []
@@ -76,7 +142,7 @@ _depthImgReceived = False
 _eyecamImgId = 0
 _eyecamImgReceived = False
 
-SERVER_WATCH_INTERVAL = 5
+batteryStatus = None
 
 class CartError(Exception):
     """
@@ -113,24 +179,6 @@ class ArucoError(Exception):
         return(repr(self.value))
 
 
-class CartControlError(Exception):
-    """
-      usage:
-    try:
-       raise(CartControlError, "move"
-    except CartControlError as error:
-        print('cart exception raised: ', error.value
-    """
-
-    # Constructor or Initializer
-    def __init__(self, value):
-        self.value = value
-
-    # __str__ is to print() the value
-    def __str__(self):
-        return(repr(self.value))
-
-
 class objectview(object):
     """
     allows attibs of a dict to be accessed with dot notation
@@ -143,21 +191,71 @@ class objectview(object):
         self.__dict__ = d
 
 
-def log(msg):
-    msg = "navManager - " + msg
-    print(msg)
+def createObjectViews():
+    global oCart, oTarget
+    oCart = objectview(cartInfo)
+    oTarget = objectview(target)
+    oLeftArm = objectview(leftArm)
+    oRightArm = objectview(rightArm)
+    oHead = objectview(head)
+
+def log(msg, publish=True):
+    msg = f"navManager - " + msg
+    if publish:
+        print(f"{dt.now()} {msg}")
     logging.info(msg)
 
 
 def othersLog(msg):
-    print(msg)
+    print(f"{dt.now()} {msg}")
     logging.info(msg)
 
 
-def taskSimulated(server):
-    return rpcSend.navManagerServers[server]['simulated']
 
-  
+def setTask(newTask):
+
+    global taskStack, task
+
+    # we can have a stack of started tasks and can return to the last requested task
+    if newTask == "pop":
+
+        #log(f"taskStack before pop: {taskStack}")
+
+        # if we have no stacked tasks set task to notask
+        if not taskStack:
+            newTask = "notask"
+        else:
+            taskStack.pop()
+            newTask = taskStack[-1]
+            log(f"newTask: {newTask}, taskStack after pop: {taskStack}")
+            return
+
+    # if we have run into a problem or successfully finished all open tasks we have notask
+    if newTask == "notask":
+        taskStack = []
+    else:
+        taskStack.append(newTask)
+
+    task = newTask
+
+    if task != "notask":
+        print()
+        log(f"new task requested: {newTask}")
+
+    if len(taskStack) > 0:
+        log(f"taskStack: {taskStack}")
+
+
+def addArrow(img, mapX, mapY, orientation, length, color=(128,128,128)):
+
+    arrowXCorr = int(length * np.cos(np.radians(90 + orientation)))
+    arrowYCorr = int(length * np.sin(np.radians(90 + orientation)))
+    cv2.circle(img, (mapX,mapY), 3, color, -1)
+    cv2.arrowedLine(img, (mapX, mapY),
+                        (mapX + arrowXCorr, mapY - arrowYCorr), color, 1, tipLength=0.3)  # mark cart orientation
+    return img
+
+
 def setDockingMarkerPosition(location, orientation):
     
     global _dockingMarkerPosition
@@ -169,151 +267,16 @@ def getDockingMarkerPosition():
     return _dockingMarkerPosition
 
 
-def getRoomScanCompleted():
-    return True
-
 
 def distDegToScanPos(index):
     '''
     from the current cart position calc distance and degree to any other scan position
     '''
-    dx = _scanLocations[index][0] - cartLocation.x
-    dy = _scanLocations[index][1] - cartLocation.y
+    dx = scanLocations[index][0] - oCart.x
+    dy = scanLocations[index][1] - oCart.y
     directionDegrees = np.degrees(np.arctan2(dx, dy))
     distance = np.hypot(dx, dy)
     return (directionDegrees, distance)
-
-
-def setCartOrientation(newOrientation):
-
-    global cartOrientation
-
-    cartOrientation = newOrientation
-
-
-def getCartOrientation():
-    if not rpcSend.navManagerServers['cartControl']['simulated']:
-        rpcSend.navManagerServers['cartControl']['conn'].root.exposed_requestCartOrientation()       # query cart first as we experienced offsets between cart and navManager
-    return cartOrientation
-
-
-def setCartLocation(posX, posY):
-
-    global cartLocation
-
-    cartLocation.x = posX
-    cartLocation.y = posY
-
-
-def getCartLocation():
-    return cartLocation.x, cartLocation.y
-
-
-def setCartInfo(newCartInfo):
-
-    global cartOrientation, cartLocation, cartMoving, cartRotating
-
-    cartOrientation, cartLocation.x, cartLocation.y, cartMoving, cartRotating = newCartInfo
-
-
-def isCartRotating():
-    '''
-    get current status from cart and update navManager value
-    '''
-    global cartRotating
-
-    cartRotating = rpcSend.navManagerServers['cartControl']['conn'].root.exposed_isCartRotating()
-    return cartRotating
-
-
-def isCartMoving():
-
-    global cartMoving
-
-    cartMoving = rpcSend.navManagerServers['cartControl']['conn'].root.exposed_isCartMoving()
-    return cartMoving
-
-
-def setTargetOrientation(degree):
-
-    global _targetOrientation
-
-    _targetOrientation = degree
-
-
-def getTargetOrientation():
-    return _targetOrientation
-
-
-def getRemainingRotation():
-    a = _targetOrientation - cartOrientation
-    a = (a + 180) % 360 - 180
-    log(f".getRemainingRotation: targetOrientation {_targetOrientation:.0f}, cartOrientation: {cartOrientation:.0f}, diff: {a:.0f}")
-    return a
-
-
-def getRemainingDistance(distance):
-    remaining = np.hypot(_targetLocation.x - cartLocation.x, _targetLocation.y - cartLocation.y)
-    #log(f"requested distance {distance}, remaining distance: {remaining}")
-    return remaining
-
-
-
-
-def setTask(newTask):
-
-    global _taskStack, _task
-
-    # we can have a stack of started tasks and can return to the last requested task    
-    if newTask == "pop":
-
-        # if we have no stacked tasks set task to notask
-        if not _taskStack:
-            newTask = "notask"
-        else:
-            # try to continue previous task
-            newTask = _taskStack.pop()
-            log(f"task popped back to {newTask}")
-            return
-
-    # if we have run into a problem or successfully finished all open tasks we have notask
-    if newTask == "notask":
-        _taskStack = []
-    else:
-        _taskStack.append(newTask)
-
-    _task = newTask
-    log(f"new task requested: {newTask}")
-
-
-def getTask():
-    return _task
-
-
-def setCartBlocked(yesNo):
-
-    global _cartBlocked
-
-    _cartBlocked = yesNo
-
-
-def getCartBlocked():
-    return _cartBlocked
-
-
-def getTargetLocation():
-    return _targetLocation
-
-
-def evalTargetPos(distance, mapDegree):
-
-    global _targetLocation
-    trigDegree = (mapDegree + 90) % 360
-    dx = distance * np.cos(np.radians(trigDegree))
-    dy = distance * np.sin(np.radians(trigDegree))
-    _targetLocation.x = cartLocation.x + dx
-    _targetLocation.y = cartLocation.y - dy
-    return _targetLocation
 
 
 def nextCartcamImgId():
@@ -338,17 +301,6 @@ def nextDepthImgId():
     return _depthImgId
 
 
-def setCartcamImgReceived(trueFalse):
-
-    global _cartcamImgReceived
-
-    _cartcamImgReceived = trueFalse
-
-
-def getCartcamImgReceived():
-    return _cartcamImgReceived
-
-
 def allowCartRotation(newStatus):
 
     global _allowCartRotation
@@ -360,56 +312,15 @@ def allowCartRotation(newStatus):
         _allowCartRotation = False
 
 
-def setCartDocked(newStatus):
+#def setCartDocked(newStatus):
 
-    global _cartDocked
+#    global _cartDocked
 
-    _cartDocked = newStatus
-
-
-def isCartDocked():
-    return _cartDocked
+#    _cartDocked = newStatus
 
 
-def saveMapInfo():
-    # Saving the objects:
-    mapInfo = { 'room':_room, 'fullScanDone':_fullScanDone }
-    filename = f"{PATH_ROOM_DATA}/mapInfo.json"
-    with open(filename, "w") as write_file:
-        json.dump(mapInfo, write_file)
-
-
-def loadMapInfo():
-    '''
-    the cartControl task keeps track of position and location. this is necessary because the cart
-    can also be moved by directly using the cartControl interface without connection to the navManager
-    '''
-    global _room, _fullScanDone
-
-    # Getting back the map data:
-    filename = f"{PATH_ROOM_DATA}/mapInfo.json"
-    if os.path.exists(filename):
-        with open(filename, "r") as read_file:
-            mapInfo = json.load(read_file)
-
-        _room = mapInfo['room']
-        _fullScanDone = mapInfo['fullScanDone']
-
-    else:
-        _room = 'unknown'
-        _fullScanDone = False
-        saveMapInfo()
-
-    if not rpcSend.navManagerServers['cartControl']['simulated']:
-        cartsCartOrientation, cartsPosX, cartsPosY, cartMoving, cartRotating = (0, 0, 0, False, False)
-        try:
-            cartsCartOrientation, cartsPosX, cartsPosY, cartMoving, cartRotating = rpcSend.navManagerServers['cartControl']['conn'].root.exposed_getCartInfo()
-        except Exception as e:
-            log(f"could not get cartInfo from 'cartControl', {e}")
-
-        setCartLocation(cartsPosX, cartsPosY)
-        setCartOrientation(cartsCartOrientation)
-        log(f"cartInfo: cartsCartOrientation: {cartsCartOrientation}, cartsPosX: {cartsPosX}, cartsPosY: {cartsPosY}, cartMoving: {cartMoving}, cartRotating: {cartRotating}")
+#def isCartDocked():
+#    return _cartDocked
 
 
 def clearMarkerList():
@@ -439,12 +350,4 @@ def getArucoMarkerInfo(markerId):
     return {}
 
 
-def setFullScanDone(newStatus):
-
-    global _fullScanDone
-
-    _fullScanDone = newStatus
-
-    # persist fullScanDone information
-    saveMapInfo()
 
