@@ -4,10 +4,9 @@ from datetime import datetime as dt
 
 import logging
 import numpy as np
-import cv2
+from enum import Enum
 from collections import deque
 
-import navMap
 
 # involved computers
 marvin = "192.168.0.17"
@@ -22,15 +21,19 @@ MY_PORT = 20010
 taskOrchestrator = None
 
 # Kinect must be started first, otherwise driver complains
-navManagerServers = { 'kinect':       {'simulated': False, 'startupTime': 15, 'startRequested': None, 'ip': marvin, 'port': 20003, 'conn': None,
-                                       'lifeSignalRequest': time.time(), 'lifeSignalReceived': time.time()+1},
-                      'aruco':        {'simulated': False, 'startupTime': 15, 'startRequested': None, 'ip': marvin, 'port': 20002, 'conn': None,
-                                       'lifeSignalRequest': time.time(), 'lifeSignalReceived': time.time()+1},
-                      'servoControl': {'simulated': False, 'startupTime': 25, 'startRequested': None, 'ip': marvin, 'port': 20004, 'conn': None,
-                                       'lifeSignalRequest': time.time(), 'lifeSignalReceived': time.time()+1},
-                      'cartControl':  {'simulated': False, 'startupTime': 20, 'startRequested': None, 'ip': marvin, 'port': 20001, 'conn': None,
-                                       'lifeSignalRequest': time.time(), 'lifeSignalReceived': time.time()+1}
-                      }
+navManagerServers = { 'kinect':       {'simulated': False, 'startupTime': 10, 'startRequested': None, 'ip': marvin, 'port': 20003, 'conn': None,
+                                       'lifeSignalRequest': time.time(), 'lifeSignalReceived': time.time()+1,
+                                       'connectionState': 'down', 'serverReady': False},
+                      'aruco':        {'simulated': 1, 'startupTime': 10, 'startRequested': None, 'ip': marvin, 'port': 20002, 'conn': None,
+                                       'lifeSignalRequest': time.time(), 'lifeSignalReceived': time.time()+1,
+                                       'connectionState': 'down', 'serverReady': False},
+                      'servoControl': {'simulated': True, 'startupTime': 10, 'startRequested': None, 'ip': marvin, 'port': 20004, 'conn': None,
+                                       'lifeSignalRequest': time.time(), 'lifeSignalReceived': time.time()+1,
+                                       'connectionState': 'down', 'serverReady': False},
+                      'cartControl':  {'simulated': True, 'startupTime': 10, 'startRequested': None, 'ip': marvin, 'port': 20001, 'conn': None,
+                                       'lifeSignalRequest': time.time(), 'lifeSignalReceived': time.time()+1,
+                                       'connectionState': 'down', 'serverReady': False}
+                    }
 
 
 # navMap
@@ -52,7 +55,9 @@ floorPlan = None
 floorPlanFat = None
 obstacleMap = None
 obstacleMapFat = None
+
 fullScanPlan = None
+fullScanPlanFat = None
 
 scanLocations = []
 markerInfo = []
@@ -66,41 +71,31 @@ servoCurrent = {}
 DOCKING_MARKER_ID = 10
 DOCKING_DETAIL_ID = 11
 KINECT_X_RANGE = 60        # degrees of view with Kinect 1, we need 6 cart rotations for full circle
-DISTANCE_CART_CENTER_CAM = 330 
-MARKER_XOFFSET_CORRECTION = -15     # distance docking cave - docking detail marker might not be equal to distance docking fingers - cartcam
-DOCKING_START_DISTANCE_FROM_MARKER = 600
+
+
 
 # list of possible tasks
 tasks = ["restartServers",
          "createFloorPlan",
          "fullScanAtPosition",
          "rover",
-         "showEyecamImage",
-         "showCartcamImage",
+         "checkForMarker",
+         "checkForPerson",
+         "takeCartcamImage",
          "getDepthImage",
          "findMarker",
          "approachTarget",
          "dock",
+         "moveCart",
          "stop",
-         "moveForward50",
-         "moveBackward50",
          "moveHead",
-         "setPin41",
-         "clearPin41",
+         "queryCartInfo",
+         "Listen",
          "exit"]
 
 
 taskStack = []
 task = None
-
-#cartLocation = Point2D(0, 0)                #
-#cartOrientation = 0
-
-cartInfo = {'x': 0, 'y': 0, 'orientation': 0, 'moving:': False, 'rotating': False, 'blocked': False, 'docked': False, 'updateTime': time.time()}
-oCart = None
-
-# navManager local cart position correction, gets set by fullScanAtPosition and reset after sending it to the cart
-cartPositionCorrection = {'x': 0, 'y': 0, 'o': 0}
 
 target = {'x': 0, 'y': 0, 'orientation': 0, 'show': False}
 oTarget = None
@@ -119,7 +114,7 @@ oHead =  None
 PATH_ROOM_DATA = "D:/Projekte/InMoov/navManager/ROOMS"
 room = 'unknown'
 fullScanDone = False
-fullScanResult = np.zeros((navMap.MAP_WIDTH, navMap.MAP_HEIGHT), dtype=np.uint8)
+
 
 # positions where a 360 view has been made and recorded
 _dockingMarkerPosition = None    # position and orientation that showed the docking marker
@@ -129,9 +124,7 @@ emptyMarkerInfo = {'markerId': 0, 'distance' : 0, 'markerAngleInImage': 0, 'mark
 #markerInfoRec = Record.create_type('markerInfo', 'id', 'distance', 'yawToMarker', 'yawToCartTarget', 'distToCartTarget')
 #markerInfo = markerInfoRec(None,0,0,0,0)
 
-
 EYE_X_CORR = -5     # Offset Auge zum Bild-Zentrum (negativ=Auge hat rechtsdrall)
-
 
 # Variables for scanning environment
 _allowCartRotation = True
@@ -143,6 +136,63 @@ _eyecamImgId = 0
 _eyecamImgReceived = False
 
 batteryStatus = None
+
+cartColor = (255,255,0)     # cyan
+markerColor = (255,255,0)   # yellow
+targetColor = (0,255,0)     # green
+scanLocationColor = (128,255,128)   # light green
+
+# tensorflow nets for people locator, age and gender classification
+netsLoaded = False
+
+class Direction(Enum):
+    STOP = 0
+    FORWARD = 1
+    FOR_DIAG_RIGHT = 2
+    FOR_DIAG_LEFT = 3
+    LEFT = 4
+    RIGHT = 5
+    BACKWARD = 6
+    BACK_DIAG_RIGHT = 7
+    BACK_DIAG_LEFT = 8
+    ROTATE_LEFT = 9
+    ROTATE_RIGHT = 10
+
+
+class cCart:
+
+    _x = 0
+    _y = 0
+    _o = 0
+    xCorr = 0
+    yCorr = 0
+    oCorr = 0
+    moving = False
+    rotating = False
+    blocked = False
+    docked = False
+    updateTime = time.time()
+
+    def setX(self, x):
+        self._x = int(x)
+
+    def getX(self):
+        return round(self._x + self.xCorr)
+
+    def setY(self, y):
+        self._y = int(y)
+
+    def getY(self):
+        return round(self._y + self.yCorr)
+
+    def setYaw(self, o):
+        self._o = int(o)
+
+    def getYaw(self):
+        return round(self._o + self.oCorr)
+
+oCart = cCart()
+
 
 class CartError(Exception):
     """
@@ -162,13 +212,13 @@ class CartError(Exception):
         return(repr(self.value))
 
 class ArucoError(Exception):
-    '''
+    """
     usage:
-    try: 
+    try:
        raise(ArucoError, <markerId>)
    except ArucoError as error:
         print('aruco exception raised: ', error.value
-    '''
+    """
  
     # Constructor or Initializer
     def __init__(self, value):
@@ -192,8 +242,7 @@ class objectview(object):
 
 
 def createObjectViews():
-    global oCart, oTarget
-    oCart = objectview(cartInfo)
+    global oTarget, oLeftArm, oRightArm, oHead
     oTarget = objectview(target)
     oLeftArm = objectview(leftArm)
     oRightArm = objectview(rightArm)
@@ -212,49 +261,6 @@ def othersLog(msg):
 
 
 
-def setTask(newTask):
-
-    global taskStack, task
-
-    # we can have a stack of started tasks and can return to the last requested task
-    if newTask == "pop":
-
-        #log(f"taskStack before pop: {taskStack}")
-
-        # if we have no stacked tasks set task to notask
-        if not taskStack:
-            newTask = "notask"
-        else:
-            taskStack.pop()
-            newTask = taskStack[-1]
-            log(f"newTask: {newTask}, taskStack after pop: {taskStack}")
-            return
-
-    # if we have run into a problem or successfully finished all open tasks we have notask
-    if newTask == "notask":
-        taskStack = []
-    else:
-        taskStack.append(newTask)
-
-    task = newTask
-
-    if task != "notask":
-        print()
-        log(f"new task requested: {newTask}")
-
-    if len(taskStack) > 0:
-        log(f"taskStack: {taskStack}")
-
-
-def addArrow(img, mapX, mapY, orientation, length, color=(128,128,128)):
-
-    arrowXCorr = int(length * np.cos(np.radians(90 + orientation)))
-    arrowYCorr = int(length * np.sin(np.radians(90 + orientation)))
-    cv2.circle(img, (mapX,mapY), 3, color, -1)
-    cv2.arrowedLine(img, (mapX, mapY),
-                        (mapX + arrowXCorr, mapY - arrowYCorr), color, 1, tipLength=0.3)  # mark cart orientation
-    return img
-
 
 def setDockingMarkerPosition(location, orientation):
     
@@ -272,8 +278,8 @@ def distDegToScanPos(index):
     '''
     from the current cart position calc distance and degree to any other scan position
     '''
-    dx = scanLocations[index][0] - oCart.x
-    dy = scanLocations[index][1] - oCart.y
+    dx = scanLocations[index][0] - oCart.getX()
+    dy = scanLocations[index][1] - oCart.getY()
     directionDegrees = np.degrees(np.arctan2(dx, dy))
     distance = np.hypot(dx, dy)
     return (directionDegrees, distance)
@@ -322,32 +328,6 @@ def allowCartRotation(newStatus):
 #def isCartDocked():
 #    return _cartDocked
 
-
-def clearMarkerList():
-    
-    global _arucoMarkers
-
-    _arucoMarkers = []
-
-
-def addArucoMarkers(markerList):
-
-    global _arucoMarkers
-
-    for m in markerList:
-        for indexN, n in enumerate(_arucoMarkers):
-            if m["markerId"] == n["markerId"]:
-                del _arucoMarkers[indexN]
-
-        _arucoMarkers.append(m)
-
-
-def getArucoMarkerInfo(markerId):
-    for m in _arucoMarkers:
-        if m["markerId"] == markerId:
-            return m
-
-    return {}
 
 
 

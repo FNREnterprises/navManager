@@ -1,14 +1,11 @@
 
-import os
 import time
 import rpyc
 
 import config
-import rpcReceive
 import guiUpdate
-import guiLogic
-
-
+import navManager
+import winsound
 
 
 def connected(server):
@@ -42,6 +39,7 @@ def startSlaveServer(server, taskOrchestrator):
     config.log(f"request server start from taskOrchestrator '{server}'")
     serverAlreadyRunning = False
     try:
+        oServer['connectionState'] = 'try'
         guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE.value, 'server': server, 'state': 'try'})
         ip, port, serverAlreadyRunning = config.taskOrchestrator.root.exposed_startServer(server)
         if not serverAlreadyRunning:
@@ -59,10 +57,11 @@ def startSlaveServer(server, taskOrchestrator):
     # allow task some time to startup if not already running
     if serverAlreadyRunning:
         config.log(f"task '{server}' was already running")
-        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE.value, 'server': server, 'state': 'up'})
+        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE.value, 'server': server})
+
     else:
         config.log(f"task {server} was not running, wait {oServer.startupTime} seconds for getting ready")
-        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE.value, 'server': server, 'state': 'wait'})
+        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE.value, 'server': server})
         #time.sleep(oServer.startup)
 
 
@@ -77,14 +76,14 @@ def terminateSlaveServer(server):
 def neededServersRunning(serversNeeded):
     serversRunning = []
     for server in serversNeeded:
-        if config.navManagerServers[server]['conn'] is not None:
+        if config.navManagerServers[server]['serverReady']:
             serversRunning.append(server)
         if config.navManagerServers[server]['simulated']:
             serversRunning.append(server)
     diff = list(set(serversNeeded) - set(serversRunning))
     if len(diff) > 0:
         config.log(f"missing running servers for requested command: {diff}")
-        config.setTask("notask")
+        navManager.setTask("notask")
         return False
     return True
 
@@ -97,17 +96,33 @@ def restartServers():
 
 
 def queryCartInfo():
-    '''
+    """
     query cart task for current values
     cartOrientation, cartLocationX, cartLocationY, cartMoving, cartRotating
-    '''
+    """
     if connected('cartControl'):
         #cartOrientation, cartLocationX, cartLocationY, cartMoving, cartRotating = config.navManagerServers['cartControl']['conn'].root.exposed_getCartInfo()
-        config.oCart.orientation, config.oCart.x, config.oCart.y, config.oCart.moving, config.oCart.rotating = config.navManagerServers['cartControl']['conn'].root.exposed_getCartInfo()
+        x,y,o,config.oCart.moving,config.oCart.rotating = config.navManagerServers['cartControl']['conn'].root.exposed_getCartInfo()
+        config.oCart.setX(x)
+        config.oCart.setY(y)
+        config.oCart.setYaw(o)
         guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CART_INFO.value})
-        config.log(f"queryCartInfo: {config.oCart.orientation}, {config.oCart.x}, {config.oCart.y}, {config.oCart.moving}, {config.oCart.rotating}")
+        config.log(f"queryCartInfo: x: {config.oCart.getX()}, y: {config.oCart.getY()}, yaw: {config.oCart.getYaw()}, moving: {config.oCart.moving}, rotating: {config.oCart.rotating}")
     else:
-        config.oCart.orientation, config.oCart.x, config.oCart.y, config.oCart.moving, config.oCart.rotating = (0, 0, 0, False, False)
+        config.log(f"no connection with cartControl")
+
+
+def queryBatteries():
+    if connected('cartControl'):
+
+        config.batteryStatus = config.navManagerServers['cartControl']['conn'].root.getBatteryStatus()
+
+        if config.batteryStatus is not None:
+            #{'plugged','percent','v12','v6'}
+            guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.BATTERY_UPDATE.value})
+
+            if config.batteryStatus['percent'] < 10:
+                winsound.PlaySound('sound.wav', winsound.SND_FILENAME)
 
 
 def getEyecamImage():
@@ -134,47 +149,83 @@ def getCartcamImage():
 
 def getDepth(orientation):
     if connected('kinect'):
-        try:
-            return rpyc.classic.obtain(config.navManagerServers['kinect']['conn'].root.exposed_getDepth(orientation))
-        except Exception as e:
-            config.log(f"could not get depth image: {e}")
+        retries = 0
+        success = False
+        while not success and retries < 3:
+            success = True
+            try:
+                return rpyc.classic.obtain(config.navManagerServers['kinect']['conn'].root.exposed_getDepth(orientation))
+
+            except Exception as e:
+                success = False
+                retries += 1
+                config.log(f"could not get depth image: {e}, attempt {retries}")
+
+        if not success:
+            config.log(f"no success, trying to restart kinect server ...")
+            navManager.restartServer('kinect')
+            time.sleep(config.navManagerServers['kinect']['startupTime'])
             return None
     else:
         return None
 
 
+def checkForObstacle():
+
+    try:
+        config.navManagerServers['kinect']['conn'].root.exposed_startMonitoring()
+    except Exception as e:
+        success = False
+        config.log(f"could not request monitoring {e}")
+
+    # obstacles should get published
+    time.sleep(5)
+
+    try:
+        config.navManagerServers['kinect']['conn'].root.exposed_stopMonitoring()
+
+    except Exception as e:
+        success = False
+        config.log(f"could not request monitoring {e}")
+
+
 def requestMove(direction, speed, distanceMm):
     if connected('cartControl'):
         config.oCart.moving = True
-        config.navManagerServers['cartControl']['conn'].root.exposed_move(int(direction), int(speed), int(distanceMm))
+        config.navManagerServers['cartControl']['conn'].root.exposed_move(direction.value, int(speed), int(distanceMm))
 
 
 def adjustCartPosition(x, y, o):
 
     # navManager local cart position correction (not sent to the cart yet)
-    config.cartPositionCorrection['x'] += x
-    config.cartPositionCorrection['y'] += y
-    config.cartPositionCorrection['o'] += o
+    config.oCart.xCorr += x
+    config.oCart.yCorr += y
+    config.oCart.oCorr += o
 
     if connected('cartControl'):
-        config.navManagerServers['cartControl']['conn'].root.exposed_adjustCartPosition(x, y, o)
-        config.cartPositionCorrection['x'] = 0
-        config.cartPositionCorrection['y'] = 0
-        config.cartPositionCorrection['o'] = 0
+        config.navManagerServers['cartControl']['conn'].root.exposed_adjustCartPosition(config.oCart.xCorr, config.oCart.yCorr, config.oCart.oCorr)
+        config.oCart.xCorr = 0
+        config.oCart.yCorr = 0
+        config.oCart.oCorr = 0
 
 
-def lookForMarkers(camera, markerId):
-    '''
+def lookForMarkers(camera, markerIdList):
+    """
     returns a list of dict with attribs:
     {'markerId', 'distanceCamToMarker', 'angleToMarker', 'markerOrientation'}
     :param camera: EYE_CAM or CART_CAM
-    :param markerId: list of markerId's to look for, may be empty to return all markers found
+    :param markerIdList: list of markerId's to look for, may be empty to return all markers found
     :return:
-    '''
+    """
     if connected('aruco'):
-        result = config.navManagerServers['aruco']['conn'].root.exposed_findMarkers(camera, markerId)
-        markerFound = len(result) > 0
-        return markerFound, result
+        try:
+            result = rpyc.classic.obtain(config.navManagerServers['aruco']['conn'].root.exposed_findMarkers(camera, markerIdList, config.oCart.getYaw()))
+        except Exception as e:
+            config.log(f"could not request marker evaluation: {e}")
+            return None
+
+        #result = config.navManagerServers['aruco']['conn'].root.exposed_findMarkers(camera, markerId)
+        return len(result) > 0, result
     else:
         return False
 
@@ -229,3 +280,8 @@ def pinLow(pinList):
     if connected("servoControl"):
         config.log(f"request pin low: {pinList}")
         config.navManagerServers['servoControl']['conn'].root.exposed_pinLow(pinList)
+
+def powerKinect(newState):
+    if connected("cartControl"):
+        config.log(f"power kinect: {newState}")
+        config.navManagerServers['cartControl']['conn'].root.exposed_powerKinect(newState)

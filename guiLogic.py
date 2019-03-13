@@ -1,6 +1,4 @@
 
-import time
-
 import numpy as np
 import cv2
 
@@ -11,7 +9,7 @@ import config
 import gui
 import guiUpdate
 import navMap
-
+import navManager
 
 class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
 
@@ -21,6 +19,8 @@ class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
         self.setupUi(self)
 
         self.threads = []
+
+        self.move(100,100)
 
         # mark simulated subTasks
         if config.navManagerServers['aruco']['simulated']:
@@ -65,55 +65,56 @@ class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
 
     def on_button_clicked(self, b):
         #print(f"newTask requested: {b.text()}")
-        config.setTask(b.text())
+        navManager.setTask(b.text())
 
     def on_restart_clicked(self, b):
         server = b.toolTip()
-        print(f"server to restart: {server}")
-        config.navManagerServers[server]['conn'] = None
-        config.navManagerServers[server]['startRequested'] = time.time()
-        config.taskOrchestrator.root.restartServer(server)
-        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE.value, 'server': server, 'state': 'down'})
+        config.log(f"server to restart: {server}")
+        navManager.restartServer(server)
 
-    def on_showCart_stateChanged(selfself):
+    def on_showCart_stateChanged(self):
         guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP.value})
 
-    def on_showTarget_stateChanged(selfself):
+    def on_showTarget_stateChanged(self):
         guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP.value})
 
-    def on_showScanLocation_stateChanged(selfself):
+    def on_showScanLocation_stateChanged(self):
         guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP.value})
 
-    def on_showMarkers_stateChanged(selfself):
+    def on_showMarkers_stateChanged(self):
         guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP.value})
 
-    def on_showMovePath_stateChanged(selfself):
+    def on_showMovePath_stateChanged(self):
         guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP.value})
+
 
     def connectionMarkup(self, state):
-        checked = True
+        checked = False
         style = ""
-        if state == "up":
+
+        if state == "ready":
             style = "color: white; background: green"
-        elif state == "down":
-            style = "color: white; background: red"
-            checked = False
+            checked = True
+        elif state == "connected":
+            style = "color: black; background: chartreuse"
         elif state == "try":
             style = "color: black; background: yellow"
-        elif state == "wait":
-            style = "color: black; background: chartreuse"
+        elif state == "down":
+            style = "color: white; background: red"
         else:
             config.log(f"unknown connection state {state}")
         return checked, style
 
+
     # this is called by guiUpdate ...emit...
     @pyqtSlot(int, object)
-    def updateGui(self, type, data):
+    def updateGui(self, updateType, data):
 
-        #print(f"in updateGui, {type}, {data}")
-        if type == guiUpdate.updType.CONNECTION_UPDATE.value:
+        #print(f"in updateGui, {updateType}, {data}")
+        if updateType == guiUpdate.updType.CONNECTION_UPDATE.value:
 
             oData = config.objectview(data)
+            config.log(f"updateGui, CONNECTION_UPDATE, server: {oData.server}, state: {oData.state}")
             checked, style = self.connectionMarkup(oData.state)
 
             if oData.server == 'taskOrchestrator':
@@ -135,18 +136,17 @@ class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
                 config.log(f"guiLogic, CONNECTION_UPDATE received for unknown server {oData.server}")
 
 
-        if type == guiUpdate.updType.MAP.value:
+        if updateType == guiUpdate.updType.MAP.value:
 
             #config.log(f"start gui map update")
             colImg = cv2.cvtColor(config.floorPlan, cv2.COLOR_GRAY2RGB)
 
             # add cart position and orientation
             if self.showCart.isChecked():
-                mapX, mapY = navMap.evalMapLocation(config.oCart.x, config.oCart.y)
-                cartColor = (0,255,255)    # BGR!
+                mapX, mapY = navMap.evalMapLocation(config.oCart.getX(), config.oCart.getY())
                 #config.log(f"cart pos: {config.oCart.x}/{config.oCart.y}, map: {mapX}/{mapY}")
-                config.addArrow(colImg, mapX, mapY, config.oCart.orientation, 10, cartColor)
-                cv2.circle(colImg,(mapX, mapY), 3, cartColor, -1)
+                navMap.addArrow(colImg, mapX, mapY, config.oCart.getYaw(), 10, config.cartColor)
+                cv2.circle(colImg,(mapX, mapY), 3, config.cartColor, -1)
 
                 # draw hair cross at 0,0
                 hairCrossColor = (0,0,255)
@@ -162,53 +162,52 @@ class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
 
             # show scanLocations if requested
             if self.showScanLocations.isChecked():
-                scanLocColor = (0,0,255)
                 for scanLocation in config.scanLocations:
                     scanLocX, scanLocY = navMap.evalMapLocation(scanLocation[0], scanLocation[1])
-                    cv2.circle(colImg,(scanLocX,scanLocY), 3, scanLocColor, -1)
+                    cv2.circle(colImg,(scanLocX,scanLocY), 3, config.scanLocationColor, -1)
 
+            # show markers if requested
+            if self.showMarkers.isChecked():
+                for marker in config.markerInfo:
+                    markerMapX, markerMapY = navMap.evalMapLocation(marker['markerLocationX'], marker['markerLocationY'])
+                    navMap.addArrow(colImg, markerMapX, markerMapY, marker['markerAngle'], 10, config.markerColor)
+                    cv2.circle(colImg,(markerMapX, markerMapY), 3, config.markerColor, -1)
 
             # limit map to show only drawn objects, no black border
             if config.floorPlan is not None:
                 mask = config.floorPlan > 0
+
                 coords = np.argwhere(mask)  # Coordinates of non-black pixels.
-                y0, x0 = coords.min(axis=0)             # Bounding box of non-black pixels.
-                y1, x1 = coords.max(axis=0) + 1   # slices are exclusive at the top
+                if len(coords) > 0:         # do not try to show empty map
+                    y0, x0 = coords.min(axis=0)             # Bounding box of non-black pixels.
+                    y1, x1 = coords.max(axis=0) + 1   # slices are exclusive at the top
 
-                cropped = colImg[y0:y1, x0:x1]    # Get a pointer to the bounding box within colImg
+                    cropped = colImg[y0:y1, x0:x1]    # Get a pointer to the bounding box within colImg
 
-                height, width, channel = cropped.shape
-                bytesPerLine = 3 * width
-                croppedCopy = np.copy(cropped)  # looks like nobody knows why this is necessary but it works (currently)
-                qImg = QtGui.QImage(croppedCopy.data, width, height, bytesPerLine, QtGui.QImage.Format_RGB888)
+                    height, width, channel = cropped.shape
+                    bytesPerLine = 3 * width
+                    croppedCopy = np.copy(cropped)  # looks like nobody knows why this is necessary but it works (currently)
+                    qImg = QtGui.QImage(croppedCopy.data, width, height, bytesPerLine, QtGui.QImage.Format_RGB888)
 
-                pix = QtGui.QPixmap(qImg)
+                    pix = QtGui.QPixmap(qImg)
 
-                """
-                painter = QtGui.QPainter(self)
-                pen = QtGui.QPen(Qt.red, 3)
-                painter.setPen(pen)
-    
-                painter.drawEllipse(config.oCart.x, config.oCart.y,5,5)
-                """
-
-                self.Map.setPixmap(pix)
-                self.Map.setAlignment(Qt.AlignCenter)
-                self.Map.setScaledContents(True)
-                self.Map.setMinimumSize(1,1)
-                self.Map.show()
-                #config.log(f"end gui map update")
+                    self.Map.setPixmap(pix)
+                    self.Map.setAlignment(Qt.AlignCenter)
+                    self.Map.setScaledContents(True)
+                    self.Map.setMinimumSize(1,1)
+                    self.Map.show()
+                    #config.log(f"end gui map update")
 
 
-        if type == guiUpdate.updType.CART_INFO.value:
+        if updateType == guiUpdate.updType.CART_INFO.value:
 
-            self.cartOrientation.setText(f"{config.oCart.orientation}")
-            self.cartLocation.setText(f"{config.oCart.x:4.0f}, {config.oCart.y:4.0f}")
-            mapX, mapY = navMap.evalMapLocation(config.oCart.x, config.oCart.y)
+            self.cartOrientation.setText(f"{config.oCart.getYaw()}")
+            self.cartLocation.setText(f"{config.oCart.getX():4.0f}, {config.oCart.getY():4.0f}")
+            mapX, mapY = navMap.evalMapLocation(config.oCart.getX(), config.oCart.getY())
             self.mapLocation.setText(f"{mapX:4.0f}, {mapY:4.0f}")
 
 
-        if type == guiUpdate.updType.BATTERY_UPDATE.value:
+        if updateType == guiUpdate.updType.BATTERY_UPDATE.value:
             if config.batteryStatus['plugged']:
                 msg = f"plugged, {config.batteryStatus['percent']}%"
             else:

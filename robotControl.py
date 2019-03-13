@@ -5,9 +5,11 @@ import numpy as np
 import config
 import rpcSend
 import guiUpdate
+import navManager
 
 MRL_REST_API = "http://192.168.0.17:8888/api/service/"
 
+''' use config.Direction instead
 # Values for movements of cart
 STOP = 0
 FORWARD = 1 
@@ -20,6 +22,7 @@ DIAGONAL_RIGHT_BACKWARD = 7
 DIAGONAL_LEFT_BACKWARD = 8
 ROTATE_ANTICLOCKWISE = 9 
 ROTATE_CLOCKWISE = 10
+'''
 
 directionDegrees = [0,0,-45,45,90,-90,180,-135,135]
 
@@ -78,7 +81,7 @@ def servoSetAutoDetach(servoName, duration):
 
 
 def servoRest(servoName):
-    rpcSend.moveToRestDegrees(servoName)
+    rpcSend.servoRest(servoName)
 
 
 def servoRestAll():
@@ -94,10 +97,10 @@ def servoStopAll():
 
 
 def servoControl(servo, method, value=90, duration=1000):
-    '''
+    """
     use rpyc commands to communicate with inmoovControl
-    '''
-    if config.simulateServoControl:
+    """
+    if config.navManagerServers['servoControl']['simulated']:
         pass
     else:
         if servo[:4] == 'i01.':
@@ -142,56 +145,6 @@ def servoControl(servo, method, value=90, duration=1000):
 
     #navGlobal.log(f"sendMrlCommand, {url}, duration: {time.time()-start:.2f}")
 
-"""
-def moveServo(servoName, degrees, duration=1000):
-    '''
-    move a servo to the requested position if we are not already close to it
-    '''
-    '''
-    if config.simulateMrl:
-        return
-
-    currPos = queryMrlService(servo, "getCurrentPos")
-    if abs(currPos - requestedPos) > 3:
-        sendMrlCommand(servo, "moveTo", str(requestedPos))
-    '''
-    # exposed_requestServoDegrees(self, servoName, degrees, duration)
-    config.inmoovRequest.root.requestServoDegrees(servoName, degrees, duration)
-"""
-
-"""
-def moveServoBlocking(servoName, degrees, duration=1000):
-    '''
-    move a servo to the requested position if we are not already close to it
-    '''
-    '''
-    if config.simulateMrl:
-        return
-
-    currPos = queryMrlService(servo, "getCurrentPos")
-    if abs(currPos - requestedPos) > 3:
-        sendMrlCommand(servo, "moveToBlocking", str(requestedPos))
-    '''
-    # exposed_requestServoDegrees(self, servoName, degrees, duration)
-    config.inmoovRequest.root.requestServoDegrees(servoName, degrees, duration)
-    moving = True
-    while moving:
-        time.sleep(0.1)
-        currDegrees, currPosition, moving = config.inmoovRequest.root.getPosition(servoName)
-
-
-# do not use, always get headYaw from inmoovControl
-def getHeadYaw():
-
-    if config.simulateMrl:
-        headYaw = 90
-    else:        
-        headYaw = queryMrlService("i01.head.rothead","getCurrentPos")
-
-    config.setCurrentHeadYaw(headYaw)
-    return headYaw
-"""
-
 
 def stopRobot(reason):
 
@@ -203,13 +156,11 @@ def stopRobot(reason):
         rpcSend.servoStopAll()
         time.sleep(1)
 
-    config.saveCartLocation()
-
 
 def signedAngleDifference(start, end):
-    '''
+    """
     calculate angle difference in range -180 .. 180 between start and end orientation in range 0 .. 360
-    '''
+    """
     diff = end - start
     d = abs(diff) % 360
     value = 360 - d if d > 180 else d
@@ -226,64 +177,64 @@ def rotateCartRelative(relativeAngle, speed):
         relativeAngle += 360
 
     if config.navManagerServers['cartControl']['simulated']:
-        config.oTarget.orientation = ((config.oCart.orientation + relativeAngle) % 360)
+        config.oTarget.orientation = ((config.oCart.getYaw() + relativeAngle) % 360)
         config.log(f"simulated cart rotation by {relativeAngle}")
         return True
     else:
 
         # calculate target orientation
-        config.oTarget.orientation = ((config.oCart.orientation + relativeAngle) % 360)
+        config.oTarget.orientation = round((config.oCart.getYaw() + relativeAngle) % 360)
         config.log(
-            f"robotControl.rotateCartRelative: rotate cart from {config.oCart.orientation:.0f} to {config.oTarget.orientation:.0f}")
+            f"robotControl.rotateCartRelative: rotate cart from {config.oCart.getYaw():.0f} to {config.oTarget.orientation:.0f}")
 
         # request rotation from cart
         config.oCart.rotating = True
         config.navManagerServers['cartControl']['conn'].root.exposed_rotateRelative(relativeAngle, speed)
         
         # wait for cart stopped, limit wait
-        timeout = time.time() + 15
+        timeout = time.time() + abs(relativeAngle) * 0.12 + 3
         while config.oCart.rotating and time.time() < timeout:
             time.sleep(0.1)
         if time.time() > timeout:
             config.log(f"timeout rotation")
-            config.setTask("notask")
+            navManager.setTask("notask")
 
         rpcSend.queryCartInfo()
         #navGlobal.log(f"after cart command rotateRelative, isCartRotating: {navGlobal.isCartRotating()}")
         if abs(getRemainingRotation()) < 3:
-            config.log(f"cart rotation successful, stopped at {config.oCart.orientation:.0f}")
+            config.log(f"cart rotation successful, stopped at {config.oCart.getYaw():.0f}")
             return True
         else:
-            msg = f"robotControl,rotateCart: cart stopped unexpectedly at {config.oCart.orientation}, request was {config.oTarget.orientation:.0f}"
+            msg = f"robotControl,rotateCart: cart stopped unexpectedly at {config.oCart.getYaw()}, request was {config.oTarget.orientation:.0f}"
             config.log(msg)
             raise config.CartError(msg)
 
 
 def setTargetLocation(distance, relDegrees):
     """
-    careful, carts orientation 0 is to the right while map 0 is 90 degrees
+    distance in mm
     :param distance:
     :param relDegrees:
     :return:
     """
-    dx = distance * np.cos(np.radians(relDegrees))
-    dy = distance * np.sin(np.radians(relDegrees))
-    config.oTarget.x = int(config.oCart.x + dx)
-    config.oTarget.y = int(config.oCart.y + dy)
+    dx = round(distance * np.cos(np.radians(relDegrees)))
+    dy = round(distance * np.sin(np.radians(relDegrees)))
+    config.oTarget.x = config.oCart.getX() + dx
+    config.oTarget.y = config.oCart.getY() + dy
 
     # add to move queue
-    appendToMoveQueue({'fromX': config.oCart.x, 'fromY': config.oCart.y, 'toX': config.oTarget.x,'toY': config.oTarget.y})
+    appendToMoveQueue({'fromX': config.oCart.getX(), 'fromY': config.oCart.getY(), 'toX': config.oTarget.x,'toY': config.oTarget.y})
 
 
 def rotateCartAbsolute(angle, speed):
     config.log(f"rotate cart absolut to {angle}")
-    rotation = signedAngleDifference(config.oCart.orientation, angle)
+    rotation = signedAngleDifference(config.oCart.getYaw(), angle)
     rotateCartRelative(rotation, speed)
 
 
 def moveCart(absDegree, distance, speed):
 
-    cartOrientation = config.oCart.orientation
+    cartOrientation = config.oCart.getYaw()
     config.log(f"goto degree: {int(absDegree)}, distance: {int(distance)}, currOrientation: {cartOrientation}")
 
     rotation = signedAngleDifference(cartOrientation, absDegree)
@@ -296,10 +247,12 @@ def moveCart(absDegree, distance, speed):
     else:
         if rotateCartRelative(int(rotation), 150):
 
-            # limit distance to 2 m
-            if distance > 2000:
-                config.log(f"robotControl, distance reduced to 2000 mm")
-                distance = 2000
+            time.sleep(0.5)     # not sure, delay in messaging caused to see it not moving in the next step?
+
+            # limit distance to 2.5 m
+            if distance > 2500:
+                config.log(f"robotControl, distance reduced to 2500 mm")
+                distance = 2500
 
             #setTargetLocation(distance, degree)
             #config.oTarget.show = True
@@ -308,7 +261,7 @@ def moveCart(absDegree, distance, speed):
             #posX, posY = config.getCartLocation()
             #config.log(f"move from x,y: {config.oCart.x:.0f},{config.oCart.y:.0f} to {config.oTarget.x:.0f},{config.oTarget.y:.0f}")
 
-            if moveCartWithDirection(1, distance, speed):    #FORWARD
+            if moveCartWithDirection(config.Direction.FORWARD, distance, speed):    #FORWARD
                 return True
             else:
                 config.log(f"move failed")
@@ -320,18 +273,18 @@ def moveCart(absDegree, distance, speed):
 
 
 #def move(speed, direction, distanceMm):
-def moveCartWithDirection(direction, distanceMm, speed):
+def moveCartWithDirection(moveDirection: config.Direction, distanceMm, speed):
 
     try:
-        degrees = config.oCart.orientation + directionDegrees[direction] % 360
+        degrees = config.oCart.getYaw() + directionDegrees[moveDirection.value] % 360
         setTargetLocation(distanceMm, degrees)
 
         config.oTarget.show = True
         guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP.value})
 
-        config.log(f"moveByDir: dir: {direction}, cartDeg: {config.oCart.orientation}, moveDeg: {degrees}, distance: {distanceMm}, start: {config.oCart.x:.0f},{config.oCart.y:.0f}, target: {config.oTarget.x:.0f},{config.oTarget.y:.0f}")
+        config.log(f"moveByDir: dir: {moveDirection}, cartDeg: {config.oCart.getYaw()}, moveDeg: {degrees}, distance: {distanceMm}, start: {config.oCart.getX():.0f},{config.oCart.getY():.0f}, target: {config.oTarget.x:.0f},{config.oTarget.y:.0f}")
         try:
-            rpcSend.requestMove(direction, speed, distanceMm)
+            rpcSend.requestMove(moveDirection, speed, distanceMm)
 
         except Exception as e:
             raise config.CartError(f"moveCartWithDirection: {e}")
@@ -345,8 +298,8 @@ def moveCartWithDirection(direction, distanceMm, speed):
             # requested position not reached, retry or stop task??
             #posX, posY = config.getCartLocation()
             #target = config.getTargetLocation()
-            config.log(f"move not completed, remaining distance: {getRemainingDistance()}")
-            msg = f"ERROR move stopped at position: {config.oCart.x:.0f}/{config.oCart.y:.0f}, requested: {config.oTarget.x:.0f}/{config.oTarget.y:.0f}"
+            config.log(f"move not completed, remaining distance: {getRemainingDistance():.0f}")
+            msg = f"ERROR move stopped at position: {config.oCart.getX():.0f}/{config.oCart.getY():.0f}, requested: {config.oTarget.x:.0f}/{config.oTarget.y:.0f}"
             config.log(msg)
             raise config.CartError(msg)
         else:
@@ -360,15 +313,15 @@ def moveCartWithDirection(direction, distanceMm, speed):
 
 def getRemainingDistance():
     rpcSend.queryCartInfo()
-    remaining = np.hypot(config.oTarget.x - config.oCart.x, config.oTarget.y - config.oCart.y)
-    config.log(f"target: {config.oTarget.x}, {config.oTarget.y}, cart pos: {config.oCart.x}, {config.oCart.y}, remaining: {remaining}")
+    remaining = np.hypot(config.oTarget.x - config.oCart.getX(), config.oTarget.y - config.oCart.getY())
+    config.log(f"target: {config.oTarget.x}, {config.oTarget.y}, cart pos: {config.oCart.getX()}, {config.oCart.getY()}, remaining: {remaining:.0f}")
     return remaining
 
 
 def getRemainingRotation():
-    a = config.oTarget.orientation - config.oCart.orientation
+    a = config.oTarget.orientation - config.oCart.getYaw()
     a = (a + 180) % 360 - 180
-    config.log(f".getRemainingRotation: targetOrientation {config.oTarget.orientation:.0f}, cartOrientation: {config.oCart.orientation:.0f}, diff: {a:.0f}")
+    config.log(f"remaining rotation: targetOrientation {config.oTarget.orientation:.0f}, cartOrientation: {config.oCart.getYaw():.0f}, diff: {a:.0f}")
     return a
 
 
@@ -378,7 +331,7 @@ def approachTarget(target):
     return True
 
 
-def showTime():
+def showCartMoves():
 
     # moveCartByDirection(direction (FORWARD,BACKWARD..), distanceMm, speed (100..250)
     # rotateCartRelative(relativeAngle (+/- 360), speed):
@@ -386,11 +339,11 @@ def showTime():
     # moveServoBlocking(servo, requestedPos, duration=1000):
     # rotateCartRelative(relativeAngle, speed)  + anticlock, - clockwise
 
-    moveCartWithDirection(BACKWARD, 1000, 200)
+    moveCartWithDirection(config.Direction.BACKWARD, 1000, 200)
     rotateCartRelative(90, 200)
-    moveCartWithDirection(FORWARD, 200, 200)
+    moveCartWithDirection(config.Direction.FORWARD, 200, 200)
     rotateCartRelative(90, 200)
-    moveCartWithDirection(FORWARD, 1000, 200)
+    moveCartWithDirection(config.Direction.FORWARD, 1000, 200)
     rotateCartRelative(90, 200)
-    moveCartWithDirection(FORWARD, 200, 200)
+    moveCartWithDirection(config.Direction.FORWARD, 200, 200)
     rotateCartRelative(-90, 200)

@@ -2,7 +2,6 @@
 import time
 import rpyc
 import simplejson as json
-import winsound
 
 import config
 import rpcSend
@@ -19,16 +18,20 @@ def tryToRestartServer(server):
     oServer.conn = None
     oServer.startRequested = time.time()
     guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE.value, 'server': server, 'state': 'down'})
+    config.log(f"trying to restart server {server}")
     try:
         config.taskOrchestrator.root.restartServer(server)
     except Exception as e:
-        config.log(f"failure on requesting restart of server {self.server}, {e}")
+        config.log(f"failure on requesting restart of server {server}, {e}")
 
 
 # loop here
 def watchConnection(server):
 
     oServer = config.objectview(config.navManagerServers[server])
+
+    # assume server is already running by setting startRequested into the past
+    oServer.startRequested = time.time()-30
 
     while True:
 
@@ -66,15 +69,18 @@ def watchConnection(server):
                 #  try to connect with server
                 #########################
                 config.log(f"try to connect with '{server}' at {oServer.ip}, {oServer.port}")
+                config.navManagerServers[server]['connectionState'] = 'try'
                 guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE.value, 'server': server, 'state': 'try'})
                 try:
-                    oServer.conn = rpyc.connect(oServer.ip, oServer.port)
+                    oServer.conn = rpyc.connect(oServer.ip, oServer.port, config={'sync_request_timeout': 10})
+                    config.log(f"connection established with {server}")
                 except Exception as e:
                     config.log(f"could not connect with '{server}', exception: {e}")
                     tryToRestartServer(server)
                     continue
 
                 # try to open a response connection in the server
+                config.log(f"try to open a response connection in {server}")
                 try:
                     oServer.conn.root.requestForReplyConnection(config.MY_IP, config.MY_PORT)
                 except Exception as e:
@@ -108,9 +114,9 @@ def watchConnection(server):
 
                 if server == 'cartControl':
                     config.log(f"first connection with cartControl, query cart info")
-                    if oServer.conn is not None:
-                        rpcSend.queryCartInfo()
-
+                    rpcSend.powerKinect(True)
+                    rpcSend.queryCartInfo()
+                    rpcSend.queryBatteries()
 
             else:
                 # if we have a connection with the server ...
@@ -123,15 +129,9 @@ def watchConnection(server):
                     tryToRestartServer(server)
 
 
-        # get battery status from cart
+        # watch interval actions
         if server == 'cartControl':
-            try:
-                config.batteryStatus = oServer.conn.root.getBatteryStatus()
-                guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.BATTERY_UPDATE.value})
-                if config.batteryStatus < 10:
-                    winsound.PlaySound('sound.wav', winsound.SND_FILENAME)
-            except Exception as e:
-                config.log(f"could not get battery status from cartControl: {e}", publish=False)
 
+            rpcSend.queryBatteries()
 
         time.sleep(SERVER_WATCH_INTERVAL)
