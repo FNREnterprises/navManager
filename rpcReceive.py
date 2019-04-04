@@ -4,6 +4,7 @@ import simplejson as json
 
 import config
 import robotControl
+import rpcSend
 import navManager
 import guiUpdate
 
@@ -18,29 +19,27 @@ class rpcListener(rpyc.Service):
     def on_disconnect(self, conn):
         clientName = conn._channel.stream.sock.getpeername()
         config.log(f"navManagerListener on_disconnect received {clientName}")
-        config.navManagerServers[clientName]['serverReady'] = False
+        config.servers[clientName].connectionState = 'down'
         print()
 
 
     def exposed_lifeSignalUpdate(self, server):
-        config.navManagerServers[server]['lifeSignalReceived'] = time.time()
-        #config.log(f"life signal received, server: '{server}", publish=False)
-        connState = config.navManagerServers[server]['connectionState']
-        if connState == 'try':
-            config.navManagerServers[server]['connectionState'] = 'connected'
+        config.servers[server].lifeSignalReceived = time.time()
+        #config.log(f"life signal received from server: {server}")
+        if config.servers[server].connectionState == 'try':
+            config.servers[server].connectionState = 'connected'
             guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE.value, 'server': server, 'state': 'connected'})
 
 
     def exposed_serverReady(self, server, ready):
         config.log(f"ready={ready} message from server {server} received")
-        if ready and not config.navManagerServers[server]['serverReady']:
-            config.navManagerServers[server]['connectionState'] = 'ready'
-            config.navManagerServers[server]['serverReady'] = True
+        if ready:  # and not config.servers[server]['serverReady']:
+            config.servers[server].connectionState = 'ready'
             guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE.value, 'server': server, 'state': 'ready'})
 
-        if not ready and config.navManagerServers[server]['serverReady']:
-            config.navManagerServers[server]['connectionState'] = 'connected'
-            config.navManagerServers[server]['serverReady'] = False
+
+        if not ready:  # and config.servers[server]['serverReady']:
+            config.servers[server].connectionState = 'connected'
             guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE.value, 'server': server, 'state': 'connected'})
 
 
@@ -81,13 +80,18 @@ class rpcListener(rpyc.Service):
         config.oCart.update = time.time()
         #config.log(f"updateCartInfo received: {config.oCart.getX()}, {config.oCart.getY()}, {config.oCart.getYaw()},  {config.oCart.moving}, {config.oCart.rotating}", publish=False)
         guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CART_INFO.value})
+        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP.value})
 
 
     def exposed_servoUpdate(self, msg):
 
         #config.log(f"received a servoUpdate: {msg}")
         servoData = json.loads(msg)
-        config.servoCurrent[servoData['servoName']].update(servoData)
+        config.log(f"servo update for servo: {servoData['servoName']}")
+        try:
+            config.servoCurrent[servoData['servoName']].update(servoData)
+        except KeyError:
+            config.log(f"key error with servo update {servoData}")
 
 
     def exposed_obstacleUpdate(self, data):

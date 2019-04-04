@@ -6,7 +6,7 @@
 #
 # WARNING! All changes made in this file will be lost!
 
-from PyQt5 import QtCore, QtWidgets
+from PyQt5 import QtCore, QtGui, QtWidgets
 
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
@@ -38,7 +38,7 @@ class Ui_MainWindow(object):
         self.taskOrchestrator.setTristate(True)
         self.taskOrchestrator.setObjectName("taskOrchestrator")
         self.Map = QtWidgets.QLabel(self.centralwidget)
-        self.Map.setGeometry(QtCore.QRect(30, 200, 241, 211))
+        self.Map.setGeometry(QtCore.QRect(30, 180, 300, 300))
         self.Map.setFrameShape(QtWidgets.QFrame.Box)
         self.Map.setAlignment(QtCore.Qt.AlignCenter)
         self.Map.setObjectName("Map")
@@ -79,22 +79,22 @@ class Ui_MainWindow(object):
         self.Location_2.setGeometry(QtCore.QRect(240, 70, 47, 16))
         self.Location_2.setObjectName("Location_2")
         self.showCart = QtWidgets.QCheckBox(self.centralwidget)
-        self.showCart.setGeometry(QtCore.QRect(290, 240, 73, 17))
+        self.showCart.setGeometry(QtCore.QRect(30, 490, 73, 17))
         self.showCart.setObjectName("showCart")
         self.showTarget = QtWidgets.QCheckBox(self.centralwidget)
-        self.showTarget.setGeometry(QtCore.QRect(290, 270, 84, 17))
+        self.showTarget.setGeometry(QtCore.QRect(30, 520, 84, 17))
         self.showTarget.setObjectName("showTarget")
         self.showScanLocations = QtWidgets.QCheckBox(self.centralwidget)
-        self.showScanLocations.setGeometry(QtCore.QRect(290, 300, 123, 17))
+        self.showScanLocations.setGeometry(QtCore.QRect(150, 490, 123, 17))
         self.showScanLocations.setObjectName("showScanLocations")
         self.showMarkers = QtWidgets.QCheckBox(self.centralwidget)
-        self.showMarkers.setGeometry(QtCore.QRect(290, 330, 123, 17))
+        self.showMarkers.setGeometry(QtCore.QRect(150, 520, 123, 17))
         self.showMarkers.setObjectName("showMarkers")
         self.showMovePath = QtWidgets.QCheckBox(self.centralwidget)
-        self.showMovePath.setGeometry(QtCore.QRect(290, 360, 123, 17))
+        self.showMovePath.setGeometry(QtCore.QRect(30, 550, 123, 17))
         self.showMovePath.setObjectName("showMovePath")
         self.numMovements = QtWidgets.QSpinBox(self.centralwidget)
-        self.numMovements.setGeometry(QtCore.QRect(400, 360, 42, 22))
+        self.numMovements.setGeometry(QtCore.QRect(140, 550, 42, 22))
         self.numMovements.setMinimum(1)
         self.numMovements.setProperty("value", 3)
         self.numMovements.setObjectName("numMovements")

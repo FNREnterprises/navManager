@@ -9,6 +9,7 @@ import config
 import gui
 import guiUpdate
 import navMap
+import watchDog
 import navManager
 
 class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
@@ -23,13 +24,13 @@ class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
         self.move(100,100)
 
         # mark simulated subTasks
-        if config.navManagerServers['aruco']['simulated']:
+        if config.servers['aruco'].simulated:
             self.aruco.setCheckState(Qt.PartiallyChecked)
-        if config.navManagerServers['cartControl']['simulated']:
+        if config.servers['cartControl'].simulated:
             self.cartControl.setCheckState(Qt.PartiallyChecked)
-        if config.navManagerServers['servoControl']['simulated']:
+        if config.servers['servoControl'].simulated:
             self.servoControl.setCheckState(Qt.PartiallyChecked)
-        if config.navManagerServers['kinect']['simulated']:
+        if config.servers['kinect'].simulated:
             self.kinect.setCheckState(Qt.PartiallyChecked)
 
         # button group for robot commands
@@ -46,7 +47,7 @@ class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
 
         # button group for restarting apps
         self.restart_group = QtWidgets.QButtonGroup(self)
-        for i, b in enumerate(config.navManagerServers):
+        for i, b in enumerate(config.servers):
             button = QtWidgets.QPushButton(self)
             button.setText("Restart")
             button.setToolTip(b)
@@ -70,7 +71,7 @@ class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
     def on_restart_clicked(self, b):
         server = b.toolTip()
         config.log(f"server to restart: {server}")
-        navManager.restartServer(server)
+        watchDog.tryToRestartServer(server)
 
     def on_showCart_stateChanged(self):
         guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP.value})
@@ -145,8 +146,7 @@ class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
             if self.showCart.isChecked():
                 mapX, mapY = navMap.evalMapLocation(config.oCart.getX(), config.oCart.getY())
                 #config.log(f"cart pos: {config.oCart.x}/{config.oCart.y}, map: {mapX}/{mapY}")
-                navMap.addArrow(colImg, mapX, mapY, config.oCart.getYaw(), 10, config.cartColor)
-                cv2.circle(colImg,(mapX, mapY), 3, config.cartColor, -1)
+                navMap.addCart(colImg)
 
                 # draw hair cross at 0,0
                 hairCrossColor = (0,0,255)
@@ -168,10 +168,8 @@ class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
 
             # show markers if requested
             if self.showMarkers.isChecked():
-                for marker in config.markerInfo:
-                    markerMapX, markerMapY = navMap.evalMapLocation(marker['markerLocationX'], marker['markerLocationY'])
-                    navMap.addArrow(colImg, markerMapX, markerMapY, marker['markerAngle'], 10, config.markerColor)
-                    cv2.circle(colImg,(markerMapX, markerMapY), 3, config.markerColor, -1)
+                for marker in config.markerList:
+                    navMap.addMarker(colImg, marker.markerX, marker.markerY, marker.markerYaw)
 
             # limit map to show only drawn objects, no black border
             if config.floorPlan is not None:

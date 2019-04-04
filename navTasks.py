@@ -10,13 +10,14 @@ import robotControl
 import navManager
 import marker
 import docking
-import speechCommands
+import watchDog
 
 
 def checkForTasks():
 
     if config.task == "restartServers":
-        rpcSend.restartServers()
+        for server in config.servers:
+            watchDog.tryToRestartServer(server)
         navManager.setTask("notask")
 
     elif config.task == "createFloorPlan":
@@ -52,46 +53,13 @@ def checkForTasks():
         navManager.setTask("notask")
 
 
-    elif config.task == "checkForMarker":
-        '''
-        get an eyecam image and try to find people in it
-        '''
-        neededTasks = ['aruco']
-        camYaw = config.oCart.getYaw() + config.servoCurrent['head.rothead']['degrees']
-        if rpcSend.neededServersRunning(neededTasks):
-            img = rpcSend.getEyecamImage()
-            if img is not None:
-
-                markersFound, result = rpcSend.lookForMarkers("EYE_CAM", [])
-                #config.log(f"lookForMarkers result: {markersFound},{result}")
-
-                if markersFound:
-                    config.log(f"markers found: {result}")
-                    marker.updateMarkerFoundResult(result, config.oCart.getX(), config.oCart.getY(), camYaw)
-
-                '''
-                frameFace, bboxes = getFaceBox(faceNet, img)
-                if not bboxes:
-                    print("No face Detected, Checking next frame")
-                    return False
-                '''
-                cv2.imshow("inmoovEyeCamImg", img)
-                cv2.waitKey()
-                cv2.destroyAllWindows()
-
-
-            else:
-                config.log(f"could not take an eyecam image")
-
-            navManager.setTask("notask")
-
-
     elif config.task == "checkForPerson":
         '''
         get an eyecam image and try to find people in it
         '''
         neededTasks = ['aruco']
         camYaw = config.oCart.getYaw() + config.servoCurrent['head.rothead']['degrees']
+        '''
         if not config.netsLoaded:
             analyzeImage.init()
 
@@ -110,14 +78,13 @@ def checkForTasks():
 
             else:
                 config.log(f"could not take an eyecam image")
-
-            navManager.setTask("notask")
-
+        '''
+        navManager.setTask("notask")
 
     elif config.task == "takeCartcamImage":
         '''
-        simply try to access the cart cam and show the image
-       '''
+        take cart cam image and show aruco marker result
+        '''
         neededTasks = ['aruco']
         camYaw = config.oCart.getYaw()
         if rpcSend.neededServersRunning(neededTasks):
@@ -126,16 +93,18 @@ def checkForTasks():
             config.log(f"lookForMarkers result: {markersFound},{result}")
             if img is not None:
                 if markersFound:
-                    config.log(f"markers found: {result}")
-                    marker.updateMarkerFoundResult(result, config.oCart.getX(), config.oCart.getY(), camYaw)
+                    #config.log(f"markers found: {result}")
+                    marker.updateMarkerFoundResult(result, 'CART_CAM', config.oCart.getX(), config.oCart.getY(), camYaw)
 
                 cv2.imshow("inmoovCartcamImg", img)
-                cv2.waitKey()
+                cv2.waitKey(1000)
                 cv2.destroyAllWindows()
             else:
                 config.log(f"could not take a cartcam image")
 
             navManager.setTask("notask")
+        else:
+            config.log(f"aruco task not ready yet")
 
 
     elif config.task == "getDepthImage":
@@ -145,12 +114,14 @@ def checkForTasks():
         neededTasks = ['kinect']
         if rpcSend.neededServersRunning(neededTasks):
 
-            obstacles = rpcSend.getDepth(0)
-            if obstacles is not None:
-                config.log(f"obstacles: {len(obstacles)}")
-                navMap.createObstacleMap(obstacles, (config.oCart.getX(), config.oCart.getY()), config.oCart.getYaw(), show=True)
-            else:
-                config.log(f"could not acquire a depth image / obstacles")
+            for _ in range(5):
+                obstacles = rpcSend.getDepth(90)
+                if obstacles is not None:
+                    config.log(f"obstacles: {len(obstacles)}")
+                    navMap.createObstacleMap(obstacles, (config.oCart.getX(), config.oCart.getY()), config.oCart.getYaw(), show=True)
+                else:
+                    config.log(f"could not acquire a depth image / obstacles")
+                time.sleep(3)
 
             navManager.setTask("notask")
 
@@ -170,8 +141,7 @@ def checkForTasks():
 
     elif config.task == "dock":
         docking.dock()
-        #/navGlobal.setTask("in docking sequence")
-
+        navManager.setTask("notask")
 
     elif config.task == "restartServers":
         config.log(f"restartServers requested")
@@ -182,27 +152,25 @@ def checkForTasks():
         robotControl.stopRobot("manual stop request from gui")
         navManager.setTask("notask")
 
-    elif config.task == "moveHead":
 
+    elif config.task == "restPosition":
         neededTasks = ['servoControl']
         if rpcSend.neededServersRunning(neededTasks):
 
-            for _ in range(4):
-                robotControl.servoMoveToDegreesBlocking('head.rothead', 30, 500)
-                time.sleep(2)
-                robotControl.servoMoveToDegreesBlocking('head.rothead', -30, 500)
-                time.sleep(2)
-
-            """
-            for _ in range(10):
-                config.log(f"head.jaw to 15")
-                robotControl.servoMoveToDegreesBlocking('head.jaw', 0, 200)
-                time.sleep(1)
-                config.log(f"head.jaw to 50")
-                robotControl.servoMoveToDegreesBlocking('head.jaw', 30, 200)
-            """
+            robotControl.servoRestAll()
+            time.sleep(2)
 
         navManager.setTask("notask")
+
+    elif config.task == "cartMovePose":
+        neededTasks = ['servoControl']
+        if rpcSend.neededServersRunning(neededTasks):
+
+            robotControl.servoRestAll()
+            time.sleep(2)
+
+        navManager.setTask("notask")
+
 
     elif config.task == "moveCart":
         robotControl.moveCartWithDirection(config.Direction.FORWARD, 200, 200)
@@ -212,9 +180,9 @@ def checkForTasks():
         rpcSend.queryCartInfo()
         navManager.setTask("notask")
 
-    elif config.task == "Listen":
-        speechCommands.startListening()
-
+    elif config.task == "activateKinectPower":
+        rpcSend.powerKinect(True)
+        navManager.setTask("notask")
 
     elif config.task == "exit":
         config.log(f"manual exit selected")

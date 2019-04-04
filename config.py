@@ -14,26 +14,11 @@ pcjm = "192.168.0.14"
 
 # rpc
 MY_IP = pcjm
-MY_PORT = 20010
+MY_RPC_PORT = 20010
 
 # NOTE master for ip and ports is the taskOrchestrator
 # rpc connection with task orchestrator
 taskOrchestrator = None
-
-# Kinect must be started first, otherwise driver complains
-navManagerServers = { 'kinect':       {'simulated': False, 'startupTime': 10, 'startRequested': None, 'ip': marvin, 'port': 20003, 'conn': None,
-                                       'lifeSignalRequest': time.time(), 'lifeSignalReceived': time.time()+1,
-                                       'connectionState': 'down', 'serverReady': False},
-                      'aruco':        {'simulated': 1, 'startupTime': 10, 'startRequested': None, 'ip': marvin, 'port': 20002, 'conn': None,
-                                       'lifeSignalRequest': time.time(), 'lifeSignalReceived': time.time()+1,
-                                       'connectionState': 'down', 'serverReady': False},
-                      'servoControl': {'simulated': True, 'startupTime': 10, 'startRequested': None, 'ip': marvin, 'port': 20004, 'conn': None,
-                                       'lifeSignalRequest': time.time(), 'lifeSignalReceived': time.time()+1,
-                                       'connectionState': 'down', 'serverReady': False},
-                      'cartControl':  {'simulated': True, 'startupTime': 10, 'startRequested': None, 'ip': marvin, 'port': 20001, 'conn': None,
-                                       'lifeSignalRequest': time.time(), 'lifeSignalReceived': time.time()+1,
-                                       'connectionState': 'down', 'serverReady': False}
-                    }
 
 
 # navMap
@@ -60,7 +45,7 @@ fullScanPlan = None
 fullScanPlanFat = None
 
 scanLocations = []
-markerInfo = []
+markerList = []
 
 robotMovesQueue = deque(maxlen=100)
 
@@ -79,7 +64,6 @@ tasks = ["restartServers",
          "createFloorPlan",
          "fullScanAtPosition",
          "rover",
-         "checkForMarker",
          "checkForPerson",
          "takeCartcamImage",
          "getDepthImage",
@@ -88,9 +72,10 @@ tasks = ["restartServers",
          "dock",
          "moveCart",
          "stop",
-         "moveHead",
+         "restPosition",
+         "cartMovePose",
          "queryCartInfo",
-         "Listen",
+         "activateKinectPower",
          "exit"]
 
 
@@ -120,11 +105,14 @@ fullScanDone = False
 _dockingMarkerPosition = None    # position and orientation that showed the docking marker
 
 _arucoMarkers = []
-emptyMarkerInfo = {'markerId': 0, 'distance' : 0, 'markerAngleInImage': 0, 'markerYawDegrees': 0}
-#markerInfoRec = Record.create_type('markerInfo', 'id', 'distance', 'yawToMarker', 'yawToCartTarget', 'distToCartTarget')
-#markerInfo = markerInfoRec(None,0,0,0,0)
+# a list of markers of type cMarker
 
+EYE_CAM_HORIZONTAL_ANGLE = 60
+EYE_CAM_COLS = 640
 EYE_X_CORR = -5     # Offset Auge zum Bild-Zentrum (negativ=Auge hat rechtsdrall)
+
+CART_CAM_HORIZONTAL_ANGLE = 60
+CART_CAM_COLS = 640
 
 # Variables for scanning environment
 _allowCartRotation = True
@@ -160,7 +148,6 @@ class Direction(Enum):
 
 
 class cCart:
-
     _x = 0
     _y = 0
     _o = 0
@@ -192,6 +179,19 @@ class cCart:
         return round(self._o + self.oCorr)
 
 oCart = cCart()
+
+class cMarker:
+    def __init__(self):
+        markerId = None
+        cameraType = None
+        camX = None
+        camY = None
+        camYaw = None
+        angleInImage = None
+        distanceCamToMarker = None
+        markerX = None
+        markerY = None
+        markerYaw = None
 
 
 class CartError(Exception):
@@ -241,6 +241,74 @@ class objectview(object):
         self.__dict__ = d
 
 
+class cServer:
+    def __init__(self):
+        simulated = False
+        startupTime = None
+        startRequested = None
+        ip =  None
+        port = None
+        conn =  None
+        lifeSignalRequest = None
+        lifeSignalReceived = None
+        connectionState = 'unknown'
+        basicDataReceived = False
+
+# Kinect must be started first, otherwise driver complains
+servers = {'kinect': cServer(),
+           'aruco':  cServer(),
+           'servoControl': cServer(),
+           'cartControl': cServer()
+           }
+
+def defineServers():
+
+    server = 'kinect'
+    servers[server].simulated = False
+    servers[server].startupTime = 10
+    servers[server].startRequested = None
+    servers[server].ip =  marvin
+    servers[server].port = 20003
+    servers[server].conn =  None
+    servers[server].lifeSignalRequest = time.time()
+    servers[server].lifeSignalReceived = time.time()+1
+    servers[server].connectionState = 'unknown'
+
+    server = 'aruco'
+    servers[server].simulated = False
+    servers[server].startupTime = 10
+    servers[server].startRequested = None
+    servers[server].ip =  marvin
+    servers[server].port = 20002
+    servers[server].conn =  None
+    servers[server].lifeSignalRequest = time.time()
+    servers[server].lifeSignalReceived = time.time()+1
+    servers[server].connectionState = 'unknown'
+
+    server = 'servoControl'
+    servers[server].simulated = False
+    servers[server].startupTime = 10
+    servers[server].startRequested = None
+    servers[server].ip =  marvin
+    servers[server].port = 20004
+    servers[server].conn =  None
+    servers[server].lifeSignalRequest = time.time()
+    servers[server].lifeSignalReceived = time.time()+1
+    servers[server].connectionState = 'unknown'
+    servers[server].basicDataReceived = False
+
+    server = 'cartControl'
+    servers[server].simulated = False
+    servers[server].startupTime = 10
+    servers[server].startRequested = None
+    servers[server].ip =  marvin
+    servers[server].port = 20001
+    servers[server].conn =  None
+    servers[server].lifeSignalRequest = time.time()
+    servers[server].lifeSignalReceived = time.time()+1
+    servers[server].connectionState = 'unknown'
+    servers[server].basicDataReceived = False
+
 def createObjectViews():
     global oTarget, oLeftArm, oRightArm, oHead
     oTarget = objectview(target)
@@ -251,12 +319,12 @@ def createObjectViews():
 def log(msg, publish=True):
     msg = f"navManager - " + msg
     if publish:
-        print(f"{dt.now()} {msg}")
+        print(f"{str(dt.now())[11:22]} {msg}")
     logging.info(msg)
 
 
 def othersLog(msg):
-    print(f"{dt.now()} {msg}")
+    print(f"{str(dt.now())[11:22]} {msg}")
     logging.info(msg)
 
 

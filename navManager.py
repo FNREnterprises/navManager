@@ -56,6 +56,8 @@ def setTask(newTask):
 
 def setup():
 
+    config.defineServers()
+
     config.createObjectViews()
 
     # set initial task (or "notask")
@@ -63,7 +65,7 @@ def setup():
 
     # optional: set simulation status of subtasks
     #rpcSend.setSimulationMask(kinect=False, aruco=False, cartControl=False, servoControl=False)
-    rpcSend.setSimulationMask(kinect=False, aruco=False, cartControl=False, servoControl=False)
+    rpcSend.setSimulationMask(kinect=True, aruco=False, cartControl=False, servoControl=False)
 
     # wait for log listener to start up
     time.sleep(1)
@@ -84,7 +86,7 @@ def setup():
     config.log(f"connect with taskOrchestrator successful, try to getLifeSignal")
     good = False
     try:
-        good = config.taskOrchestrator.root.exposed_getLifeSignal(config.MY_IP, config.MY_PORT)
+        good = config.taskOrchestrator.root.exposed_getLifeSignal(config.MY_IP, config.MY_RPC_PORT)
     except Exception as e:
         config.log(f"failed to get response, taskOrchestrator on {subSystemIp} not running?")
         os._exit(2)
@@ -96,8 +98,8 @@ def setup():
         config.log(f"could not get life signal from task orchestrator on subsystem {subSystemIp}")
         os._exit(3)
 
-    for server in config.navManagerServers:
-        if not config.navManagerServers[server]['simulated']:
+    for server in config.servers:
+        if not config.servers[server].simulated:
             config.log(f"start server thread for {server}")
             serverThread = threading.Thread(target=watchDog.watchConnection, args={server})
             serverThread.setName(server)
@@ -105,13 +107,15 @@ def setup():
 
 
     navMap.loadMapInfo()
+    #navMap.loadMarkerList()
 
     # try to load existing floor plan
     if config.fullScanDone and navMap.loadFloorPlan(config.room):
         navMap.loadScanLocations()
-        marker.loadMarkerInfo()
+        navMap.loadMarkerList()
     else:
-        setTask('createFloorPlan')
+        config.log(f"could not load a floor plan")
+        setTask('noTask')
 
     if config.floorPlan is not None:
         guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP.value})
@@ -121,8 +125,8 @@ def setup():
     # wait for ready messages from servers
     for _ in range(15):
         allReady = True
-        for server in config.navManagerServers:
-            if not config.navManagerServers[server]['serverReady']:
+        for server in config.servers:
+            if not config.servers[server].connectionState == 'ready':
                 allReady = False
 
         if not allReady:
@@ -132,14 +136,6 @@ def setup():
     while True:
         navTasks.checkForTasks()
         time.sleep(0.1)
-
-
-def restartServer(server):
-    config.navManagerServers[server]['conn'] = None
-    config.navManagerServers[server]['serverReady'] = False
-    config.navManagerServers[server]['startRequested'] = time.time()
-    config.taskOrchestrator.root.restartServer(server)
-    guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE.value, 'server': server, 'state': 'down'})
 
 
 def startQtGui():
@@ -202,7 +198,7 @@ if __name__ == "__main__":
     guiThread.start()
 
     from rpyc.utils.server import ThreadedServer
-    print(f"start listening on port {config.MY_PORT}")
-    listener = ThreadedServer(rpcReceive.rpcListener, port=config.MY_PORT)
+    print(f"start listening on port {config.MY_RPC_PORT}")
+    listener = ThreadedServer(rpcReceive.rpcListener, port=config.MY_RPC_PORT)
     listener.start()
 

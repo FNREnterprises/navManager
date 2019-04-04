@@ -5,15 +5,17 @@ import cv2
 
 import config
 import robotControl
+import rpcSend
 import navManager
 import navMap
 
 point = Record.create_type('point','x','y')
 
 SIDE_MOVE_SPEED = 150
+DOCKING_SPEED = 60
 DOCK_MARKER_ID = 10
 DOCK_DETAIL_MARKER_ID = 11
-DOCKING_START_DISTANCE_FROM_MARKER = 500
+DOCKING_START_DISTANCE_FROM_MARKER = 600
 DISTANCE_CART_CENTER_CAM = 330
 MARKER_XOFFSET_CORRECTION = -15     # distance docking cave - docking detail marker might not be equal to distance docking fingers - cartcam
 
@@ -21,7 +23,7 @@ MARKER_XOFFSET_CORRECTION = -15     # distance docking cave - docking detail mar
 def tryToDock(dockInfo):
 
     # check for dock detail marker (11) in image
-    result = config.navManagerServers["aruco"].root.findDockingDetailMarker(config.DOCKING_DETAIL_ID)
+    result = config.servers["aruco"].root.findDockingDetailMarker(config.DOCKING_DETAIL_ID)
 
     success = bool(result[0])
     if success:
@@ -45,20 +47,20 @@ def getDockingMarkerInfo():
     return info about docker marker location or None
     :return:
     """
-    for m in config.markerInfo:
-        if m['markerId'] == DOCK_MARKER_ID:
+    for m in config.markerList:
+        if m.markerId == DOCK_MARKER_ID:
             return m
     return None
 
 
-def moveToDockingStartPosition(dockInfo):
+def moveToDockingStartPosition(dockMarker):
 
     try:
         # try to move cart to a position orthogonal in front of the dockingMarker
-        xCorr = DOCKING_START_DISTANCE_FROM_MARKER * np.cos(np.radians(180-dockInfo['markerAngle']))
-        yCorr = DOCKING_START_DISTANCE_FROM_MARKER * np.sin(np.radians(180-dockInfo['markerAngle']))
-        config.oTarget.x = dockInfo['markerLocationX'] - xCorr
-        config.oTarget.y = dockInfo['markerLocationY'] + yCorr
+        xCorr = DOCKING_START_DISTANCE_FROM_MARKER * np.cos(np.radians(dockMarker.markerYaw + 90))
+        yCorr = DOCKING_START_DISTANCE_FROM_MARKER * np.sin(np.radians(dockMarker.markerYaw + 90))
+        config.oTarget.x = dockMarker.markerX + xCorr
+        config.oTarget.y = dockMarker.markerY + yCorr
 
         # find angle from current cart position to cart target position
         xDiff = float(config.oTarget.x) - float(config.oCart.getX())
@@ -70,39 +72,143 @@ def moveToDockingStartPosition(dockInfo):
 
         cartRotation = round((absDegree - config.oCart.getYaw()) % 360)
         distance = np.hypot(xDiff, yDiff)
-        config.log(f"dock, cartYaw: {config.oCart.getYaw()}, absDegrees marker: {absDegree:.2f}, cartRotation: {cartRotation}, distance: {distance:.0f}")
+        if distance < 100:
+            config.log(f"cart is close to docking detail start point, do not move cart")
+            if abs(cartRotation) > 4:
+                config.log(f"only rotate cart by {cartRotation} degrees to face marker")
+                robotControl.rotateCartRelative(cartRotation, 180)
 
-        dockMap = cv2.cvtColor(config.floorPlan, cv2.COLOR_GRAY2RGB)
-        navMap.addCenter(dockMap)
-        navMap.addCart(dockMap)
-        navMap.addMarker(dockMap, dockInfo['markerLocationX'], dockInfo['markerLocationY'], dockInfo['markerAngle'])
-        navMap.addTarget(dockMap)
-        navMap.addPathToTarget(dockMap)     # line from cartPosition to targetPosition
+        else:
+            # move cart to docking detail position
+            config.log(f"dock, cartYaw: {config.oCart.getYaw()}, absDegrees marker: {absDegree:.2f}, cartRotation: {cartRotation}, distance: {distance:.0f}")
 
-        cv2.imshow("docking", dockMap)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
+            # visualise docking move
+            dockMap = cv2.cvtColor(config.floorPlan, cv2.COLOR_GRAY2RGB)
+            navMap.addCenter(dockMap)
+            navMap.addCart(dockMap)
+            navMap.addMarker(dockMap, dockMarker.markerX, dockMarker.markerY, dockMarker.markerYaw)
+            navMap.addTarget(dockMap)
+            navMap.addPathToTarget(dockMap)     # line from cartPosition to targetPosition
 
-        #distance = distance - 300   # reduce distance temporarily for safety reasons
+            cv2.imshow("docking", dockMap)
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
 
-        moveSuccess = robotControl.moveCart(absDegree, distance, 200)
+            # for this move we can use the 4 main cart directions
+            allowedMoves=[config.Direction.FORWARD, config.Direction.BACKWARD, config.Direction.LEFT, config.Direction.RIGHT]
+            moveSuccess = robotControl.moveCart(absDegree, distance, 200, allowedMoves)
 
-        if not moveSuccess:
-            navManager.setTask("notask")
-            return False
+            if not moveSuccess:
+                navManager.setTask("notask")
+                return False
 
-        # rotate cart to face marker
-        markerFaceYaw = dockInfo['markerAngle'] - 180
-        rotation = markerFaceYaw - config.oCart.getYaw()
-        robotControl.rotateCartRelative(rotation, 180)
+        # rotate cart to face marker, avoid a tiny rotation
+        markerFaceYaw = dockMarker.markerYaw - 90
+        difference = markerFaceYaw - config.oCart.getYaw()
+        endRotation = -robotControl.signedAngleDifference(difference, 0)
+        config.log(f"rotate cart to face marker, markerFaceYaw: {markerFaceYaw}, endRotation: {endRotation}")
+        if abs(endRotation) > 2:
+            robotControl.rotateCartRelative(endRotation, 180)
         return True
 
     except config.CartError as e:
         config.log(f"cart exception raised: {e}")
+        navManager.setTask('notask')
 
 
-def tryToDock(dockInfo):
-    pass
+def alignWithMarker(sideMoveOnly=False):
+    """
+    a loop of rotation and side moves to position cart directly in front of marker
+    for rotation use a reduced part of the optically evaluated markerYaw value
+    :param sideMoveOnly:
+    :return:
+    """
+
+    markerYawRotationThreshold = 2      # do not rotate if measured yaw is below threshold
+    markerYaw = markerYawRotationThreshold + 1  # make sure to enter alignment loop
+    sideMoveThreshold = 15              # do not move sideways if measured offset is below threshold
+    sideMove = sideMoveThreshold + 1    # make sure to enter alignment loop
+
+    # verify that cart is aligned with marker
+    # for docking this means we should align cart front with markerYaw
+    while abs(markerYaw) > markerYawRotationThreshold or abs(sideMove) > sideMoveThreshold:
+
+        if not sideMoveOnly and abs(markerYaw) > markerYawRotationThreshold:
+            navMap.takeCartcamImage(show=True)
+            markerFound, markerInfo = rpcSend.lookForMarkers("CART_CAM", [DOCK_DETAIL_MARKER_ID])
+
+            if markerFound:
+
+                # partially rotate to compensate for markerkYaw
+                # 2.4.2019 using calculated markerYaw caused overshooting or even loss of marker in cam frame
+                # as we looked for DOCK_DETAIL_MARKER only use first result ([0])
+                markerYaw = markerInfo[0]['markerYaw'] / 2
+                config.log(f"first rotate cart to be orthogonal with marker {markerYaw}")
+                if abs(markerYaw) > markerYawRotationThreshold:
+                    robotControl.rotateCartRelative(markerYaw, 180)
+
+        if abs(sideMove) > sideMoveThreshold:
+
+            navMap.takeCartcamImage(show=True)
+            markerFound, markerInfo = rpcSend.lookForMarkers("CART_CAM", [DOCK_DETAIL_MARKER_ID])
+
+            if markerFound:
+
+                # as we looked for DOCK_DETAIL_MARKER only use first result ([0])
+                angle = markerInfo[0]['angleToMarker']
+                distance = markerInfo[0]['distanceCamToMarker']
+                sideMove = distance * np.sin(np.radians(angle))
+                config.log(f"move sideways to be directly in front of marker, angle: {angle}, distance: {distance}, sideMove: {sideMove:.0f}")
+
+                if sideMove > sideMoveThreshold:
+                    robotControl.moveCartWithDirection(config.Direction.LEFT, abs(sideMove), SIDE_MOVE_SPEED, sideMoveThreshold, kinectMonitoring=False)
+
+                if sideMove < -sideMoveThreshold:
+                    robotControl.moveCartWithDirection(config.Direction.RIGHT, abs(sideMove), SIDE_MOVE_SPEED, sideMoveThreshold, kinectMonitoring=False)
+
+        return distance if markerFound else None
+
+
+def detailDockMoves(dockInfo):
+
+    # try to align cart with marker
+    distance = alignWithMarker()
+    if distance is None:
+        config.log(f"lost marker during detailDockMoves, docking failed in step 1")
+        navManager.setTask('notask')
+        return
+
+    # we should be fairly aligned now and in front of the dock
+    # move closer to dock
+    moveThreshold = 20
+    moveDistance = distance - 300
+    if abs(moveDistance) > moveThreshold:
+        robotControl.moveCartWithDirection(config.Direction.FORWARD, moveDistance, DOCKING_SPEED, moveThreshold, kinectMonitoring=False)
+
+    # step closer and verify distance
+    distance = alignWithMarker()
+    if distance is None:
+        config.log(f"lost marker during detailDockMoves, docking failed in step2")
+        navManager.setTask('notask')
+        return
+
+    moveDistance = distance - 200
+    if abs(moveDistance) > moveThreshold:
+        robotControl.moveCartWithDirection(config.Direction.FORWARD, moveDistance, DOCKING_SPEED, moveThreshold, kinectMonitoring=False)
+
+    # now try to dock, arduino watches docking switch and stops cart when activated
+    distance = alignWithMarker(sideMoveOnly=True)
+    if distance is None:
+        config.log(f"lost marker during detailDockMoves, docking failed in step3")
+        navManager.setTask('notask')
+        return
+
+    moveDistance = distance - 100
+    if abs(moveDistance) > moveThreshold:
+        robotControl.moveCartWithDirection(config.Direction.FORWARD, moveDistance, DOCKING_SPEED, moveThreshold, kinectMonitoring=False)
+
+    navManager.setTask('notask')
+
 
 
 def dock(show=True):
@@ -110,18 +216,15 @@ def dock(show=True):
     request for docking
     """
     try:
-        dockInfo = getDockingMarkerInfo()
+        dockMarker = getDockingMarkerInfo()
         #{'markerId','distance','markerLocationX','markerLocationY','markerAngle'}
-        if dockInfo is None:
+        if dockMarker is None:
             config.log(f"no docking station detected yet")
             navManager.setTask("notask")
             return
 
-        if moveToDockingStartPosition(dockInfo):
-            tryToDock(dockInfo)
-
-
-        config.log(f"dock, markerX: {dockInfo['markerLocationX']}, markerY: {dockInfo['markerLocationY']}, markerYaw: {dockInfo['markerAngle']:.0f}")
+        moveToDockingStartPosition(dockMarker)
+        config.log(f"move to docking start position")
 
     except Exception as e:
         config.log(f"{e}")

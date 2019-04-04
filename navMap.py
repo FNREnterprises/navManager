@@ -5,6 +5,7 @@ import imutils
 
 import numpy as np
 import json
+import _pickle as pickle
 import cv2
 from pyrecord import Record
 from skimage.morphology import skeletonize
@@ -48,8 +49,8 @@ def clearFloorPlan():
     config.scanLocations = []
     saveScanLocations()
 
-    config.markerInfo = []
-    saveMarkerInfo()
+    config.markerList = []
+    saveMarkerList()
 
 
 def loadFloorPlan(room):
@@ -100,15 +101,27 @@ def saveScanLocations():
 
     filename = f"{config.PATH_ROOM_DATA}/{config.room}/scanLocations.json"
     with open(filename, "w") as write_file:
-        json.dump(config.scanLocations, write_file)
+        json.dump(config.scanLocations, write_file, indent=2)
 
 
-def saveMarkerInfo():
+def saveMarkerList():
 
-    filename = f"{config.PATH_ROOM_DATA}/{config.room}/markerInfo.json"
-    with open(filename, "w") as write_file:
-        json.dump(config.markerInfo, write_file)
+    filename = f"{config.PATH_ROOM_DATA}/{config.room}/markerList.pickle"
+    with open(filename, "wb") as write_file:
+        for m in config.markerList:
+            pickle.dump(m, write_file)
 
+
+def loadMarkerList():
+
+    filename = f"{config.PATH_ROOM_DATA}/{config.room}/markerList.pickle"
+    if os.path.exists(filename):
+        with open(filename, "rb") as read_file:
+            while True:
+                try:
+                    config.markerList.append(pickle.load(read_file))
+                except EOFError:
+                    break
 
 def evalMapLocation(cartX, cartY):
     return int((cartX / MM_PER_MAP_PIXEL) + MAP_WIDTH/2), int(MAP_HEIGHT/2 - (cartY / MM_PER_MAP_PIXEL))
@@ -131,14 +144,14 @@ def addScanLocation():
 
 def getDepth():
 
-    if config.navManagerServers['kinect']['simulated']:
+    if config.servers['kinect'].simulated:
         return None
 
     return rpcSend.getDepth(config.oCart.getYaw())
 
 
 
-def takeCartcamImage():
+def takeCartcamImage(show=False):
     try:
         imgCart = rpcSend.getCartcamImage()
     except Exception as e:
@@ -150,12 +163,16 @@ def takeCartcamImage():
         imgPath = f"{config.PATH_ROOM_DATA}/{config.room}/cartcamImages/{imageName}.jpg"
         cv2.imwrite(imgPath, imgCart)
 
+        if show:
+            cv2.imshow("cartCam", imgCart)
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
         return True
 
 
 def addCenter(img):
     # draw hair cross at 0,0
-    hairCrossColor = (0,0,255)
+    hairCrossColor = (0,255,255)
     cv2.line(img, (495,500), (505, 500), hairCrossColor , 1)
     cv2.line(img, (500, 495), (500, 505), hairCrossColor, 1)
 
@@ -167,11 +184,15 @@ def addTarget(img):
     cv2.circle(img,(targetMapX,targetMapY), 3, config.targetColor, -1)
 
 
-def addMarker(img, x, y, yaw):
-    mapX, mapY = evalMapLocation(x, y)
-    config.log(f"markerMapX: {mapX}, markerMapY: {mapY}, markerYaw:{yaw}")
-    addArrow(img, mapX, mapY, yaw, 30, config.markerColor)      # cart center 600 mm in front of marker
-    cv2.circle(img,(mapX, mapY), 3, config.markerColor, -1)
+def addMarker(img, markerX, markerY, markerYaw):
+    mapX, mapY = evalMapLocation(markerX, markerY)
+    config.log(f"markerMapX: {mapX}, markerMapY: {mapY}, markerYaw:{markerYaw}")
+    addArrow(img, mapX, mapY, markerYaw+90, 600/20, config.markerColor)      # cart center 600 mm in front of marker
+    baseLength = 10
+    baseXCorr = int(baseLength * np.cos(np.radians(markerYaw)))
+    baseYCorr = int(baseLength * np.sin(np.radians(markerYaw)))
+    cv2.line(img,(mapX - baseXCorr, mapY + baseYCorr), (mapX + baseXCorr, mapY - baseYCorr), config.markerColor, 3)
+    cv2.line(img,(mapX - baseXCorr, mapY + baseYCorr), (mapX + baseXCorr, mapY - baseYCorr), (0,0,0), 1)
 
 
 def addPathToTarget(img):
@@ -180,14 +201,15 @@ def addPathToTarget(img):
     cv2.line(img,(cartMapX, cartMapY), (targetMapX, targetMapY), 255, 1)
 
 
-
 def addArrow(img, mapX, mapY, orientation, length, color=(128,128,128)):
 
     arrowXCorr = int(length * np.cos(np.radians(orientation)))
     arrowYCorr = int(length * np.sin(np.radians(orientation)))
     #cv2.circle(img, (mapX,mapY), 3, color, -1)
     cv2.arrowedLine(img, (mapX, mapY),
-                    (mapX + arrowXCorr, mapY - arrowYCorr), color, 1, tipLength=0.3)  # mark cart orientation
+                    (mapX + arrowXCorr, mapY - arrowYCorr), color, 3, tipLength=0.3)  # mark cart orientation
+    cv2.arrowedLine(img, (mapX, mapY),
+                    (mapX + arrowXCorr, mapY - arrowYCorr), (0,0,0), 1, tipLength=0.3)  # black inside
     return img
 
 
@@ -222,10 +244,11 @@ def addCart(img):
     img[y1:y2,x1:x2,:] = rotated
 
     config.log(f"cartMapX: {cartMapX}, cartMapY: {cartMapY}, cartYaw:{config.oCart.getYaw()}")
-    #cv2.circle(img,(cartMapX, cartMapY), 3, CART_COLOR, -1)
-    cv2.imshow("cart", img)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+
+    cv2.circle(img, (cartMapX,cartMapY), 5, (255,0,0))
+    #cv2.imshow("cart", img)
+    #cv2.waitKey(0)
+    #cv2.destroyAllWindows()
 
 
 def loadMapInfo():
@@ -256,7 +279,7 @@ def saveMapInfo():
     mapInfo = { 'room': config.room, 'fullScanDone': config.fullScanDone }
     filename = f"{config.PATH_ROOM_DATA}/mapInfo.json"
     with open(filename, "w") as write_file:
-        json.dump(mapInfo, write_file)
+        json.dump(mapInfo, write_file, indent=2)
 
 
 def translateImage(img, translateX, translateY):
@@ -509,7 +532,7 @@ def createObstacleMap(kinectDistances, kinectLocation, kinectOrientation, show=F
         cv2.line(img, (490,500),(510,500), 255, 1)
         cv2.line(img, (500,490),(500,510), 255, 1)
         cv2.imshow("verify obstacle map", img)
-        cv2.waitKey(0)
+        cv2.waitKey(1000)
         cv2.destroyAllWindows()
 
 
@@ -650,15 +673,15 @@ def fullScanAtPosition(lookForMarkers=None):
         config.takeDepthImageDone = False
         config.addPartialMapDone = False
 
-        if config.navManagerServers['aruco']['simulated']:
+        if config.servers['aruco'].simulated:
             config.takeCartcamImageDone = True
         else:
             config.takeCartcamImage = True
 
-        if not config.navManagerServers['kinect']['simulated']:
+        if not config.servers['kinect'].simulated:
 
             # depth image and addPartialMap run in own thread
-            config.log(f"request asynchronyzed depth image")
+            config.log(f"request depth image")
             config.takeDepthImageSuccessful = False
             config.takeDepthImage = True
             config.addPartialMap = True
@@ -705,6 +728,7 @@ def fullScanAtPosition(lookForMarkers=None):
 
             if numPlannedCartRotationSteps > 0:
                 try:
+                    #config.log(f"rotation disabled for test")
                     robotControl.rotateCartAbsolute(nextOrientation, 200)
                 except Exception as e:
                     config.log(f"failure in cart rotation to {nextOrientation} degrees")
@@ -823,8 +847,8 @@ def createFloorPlan():
     clearFloorPlan()
 
     # set location in cartControl to 0
-    if not config.navManagerServers['cartControl']['simulated']:
-        config.navManagerServers['cartControl']['conn'].root.setCartLocation(0,0)
+    if not config.servers['cartControl'].simulated:
+        config.servers['cartControl'].conn.root.setCartLocation(0, 0)
 
     return True
 
@@ -876,7 +900,7 @@ def addPartialMap():
     # store the distance array for verification, distances are from right to left!
     filename = f"{config.PATH_ROOM_DATA}/{config.room}/floorPlan/floorPlanParts/planPart{kinectPos}.json"
     with open(filename, 'w') as jsonFile:
-        json.dump(np.nan_to_num(kinectDistances).tolist(), jsonFile, indent=4)
+        json.dump(np.nan_to_num(kinectDistances).tolist(), jsonFile, indent=2)
 
     if not os.path.isfile(filename):
         config.log(f"could not create <obstacle>.json file {filename}")
@@ -915,6 +939,7 @@ def updateFloorPlanThread():
 
     global kinectDistances, kinectOrientation, kinectLocation
 
+    config.log(f"update floor plan thread started")
     while True:
 
         if config.addPartialMap and config.takeDepthImageDone and config.takeDepthImageSuccessful:
@@ -931,6 +956,7 @@ def updateFloorPlanThread():
             config.takeCartcamImageDone = False
 
             config.log(f"cartcam image request")
+
             # this call is blocking, waits for the return of the image!
             config.takeCartcamImageSuccessful = takeCartcamImage()
 
@@ -941,22 +967,30 @@ def updateFloorPlanThread():
             markersFound, result = rpcSend.lookForMarkers("CART_CAM", [])
             if markersFound:
                 config.log(f"markers found: {result}")
-                marker.updateMarkerFoundResult(result, config.oCart.getX(), config.oCart.getY(), config.oCart.getYaw())
+                marker.updateMarkerFoundResult(result, 'CART_CAM', config.oCart.getX(), config.oCart.getY(), config.oCart.getYaw())
 
         if config.takeDepthImage:
+
+            config.log(f"depth image request seen")
+
+            pause = 1
+            config.log(f"test to avoid blocking in frame capture by delaying taking image of {pause} sec")
+            time.sleep(pause)
+
             config.takeDepthImage = False
             config.takeDepthImageDone = False
 
             kinectLocation = (config.oCart.getX(), config.oCart.getY())
             kinectOrientation = config.oCart.getYaw()
 
-            config.log(f"depth image request")
             # this call is blocking, waits for the return of the depth array!
             kinectDistances = rpcSend.getDepth(kinectOrientation)
+
+            config.log(f"kinect Distances received, none: {kinectDistances is None}")
 
             config.takeDepthImageSuccessful = kinectDistances is not None
             config.takeDepthImageDone = True
 
-            config.log(f"depth image done, success: {config.takeDepthImageSuccessful}, {kinectLocation}")
+            config.log(f"depth image done, success: {config.takeDepthImageSuccessful}, kinectLocation: {kinectLocation}")
 
         time.sleep(0.1)

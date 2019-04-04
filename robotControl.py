@@ -47,7 +47,7 @@ def servoMoveToPositionBlocking(servoName, position, duration=1000):
     while True:
         # check local position as we get servo updates automatically
         time.sleep(0.1)
-        _, currPosition, _ = config.navManagerServers['servoControl']['conn'].root.exposed_getPosition(servoName)
+        _, currPosition, _ = config.servers['servoControl'].conn.root.exposed_getPosition(servoName)
         if time.time() > timeout:
             config.log(f"servoMoveToPositionBlocking timeout, requestedPosition: {position}, current position: {currPosition}")
             return
@@ -64,7 +64,10 @@ def servoMoveToDegreesBlocking(servoName, degrees, duration=1000):
     timeout = time.time() + duration/1000.0 + 3
     while True:
         time.sleep(0.1)
-        currDegrees, _, moving = rpcSend.servoGetPosition(servoName)
+        try:
+            currDegrees, _, moving = rpcSend.servoGetPosition(servoName)
+        except Exception as e:
+            config.log(f"could not move servo: {servoName} to {degrees}, {e}")
         if time.time() > timeout:
             config.log(f"servoMoveToDegreesBlocking timeout, requestedDegrees: {degrees}, current degrees: {currDegrees}")
             return
@@ -88,6 +91,10 @@ def servoRestAll():
     rpcSend.servoRestAll()
 
 
+def cartMovePose():
+    rpcSend.servoRestAll()
+
+
 def servoStop(servoName):
     rpcSend.servoStop(servoName)
 
@@ -100,7 +107,7 @@ def servoControl(servo, method, value=90, duration=1000):
     """
     use rpyc commands to communicate with inmoovControl
     """
-    if config.navManagerServers['servoControl']['simulated']:
+    if config.servers['servoControl'].simulated:
         pass
     else:
         if servo[:4] == 'i01.':
@@ -150,7 +157,7 @@ def stopRobot(reason):
 
     config.log(f"stop Robot received, reason: {reason}")
 
-    if config.navManagerServers['cartControl']['simulated']:
+    if config.servers['cartControl'].simulated:
         config.log(f"stop cart")
     else:
         rpcSend.servoStopAll()
@@ -176,7 +183,7 @@ def rotateCartRelative(relativeAngle, speed):
     if relativeAngle < -180:
         relativeAngle += 360
 
-    if config.navManagerServers['cartControl']['simulated']:
+    if config.servers['cartControl'].simulated:
         config.oTarget.orientation = ((config.oCart.getYaw() + relativeAngle) % 360)
         config.log(f"simulated cart rotation by {relativeAngle}")
         return True
@@ -189,7 +196,7 @@ def rotateCartRelative(relativeAngle, speed):
 
         # request rotation from cart
         config.oCart.rotating = True
-        config.navManagerServers['cartControl']['conn'].root.exposed_rotateRelative(relativeAngle, speed)
+        config.servers['cartControl'].conn.root.exposed_rotateRelative(relativeAngle, speed)
         
         # wait for cart stopped, limit wait
         timeout = time.time() + abs(relativeAngle) * 0.12 + 3
@@ -232,20 +239,76 @@ def rotateCartAbsolute(angle, speed):
     rotateCartRelative(rotation, speed)
 
 
-def moveCart(absDegree, distance, speed):
+def evalBestMoveDirection(rotation, allowedMoves):
+    """
+    for the possible move directions find shortest path
+    :param rotation: moveAngle, -180 .. 180
+    :param allowedMoves: FORWARD, BACKWARD, LEFT, RIGHT
+    :return: moveDirection, startRotation, endRotation
+    """
+    F = config.Direction.FORWARD
+    B = config.Direction.BACKWARD
+    L = config.Direction.LEFT
+    R = config.Direction.RIGHT
+
+    moveTable = [
+        {'startAngle':    0, 'endAngle':   45, 'moveDir': [F,L,B,R]},
+        {'startAngle':   45, 'endAngle':   90, 'moveDir': [L,F,B,R]},
+        {'startAngle':   90, 'endAngle':  135, 'moveDir': [L,B,F,R]},
+        {'startAngle':  135, 'endAngle':  180, 'moveDir': [B,L,F,R]},
+        {'startAngle':  180, 'endAngle':  225, 'moveDir': [B,R,F,L]},
+        {'startAngle':  225, 'endAngle':  270, 'moveDir': [R,B,F,L]},
+        {'startAngle':  270, 'endAngle':  315, 'moveDir': [R,F,B,L]},
+        {'startAngle':  315, 'endAngle':  360, 'moveDir': [F,R,B,L]}
+    ]
+    rotation = (rotation + 360) % 360       # convert to 0..360 degrees
+    moveDirection = config.Direction.FORWARD
+    rotationForMove = rotation
+    endRotation = 0
+
+    for entry in moveTable:
+        if rotation > entry['startAngle'] and rotation <= entry['endAngle']:
+            for dir in entry['moveDir']:
+                if dir in allowedMoves:
+                    moveDirection = dir
+                    break
+
+    if moveDirection == config.Direction.FORWARD:
+        rotationForMove = rotation
+    elif moveDirection == config.Direction.LEFT:
+        rotationForMove = rotation - 90
+        endRotation = 90
+    elif moveDirection == config.Direction.BACKWARD:
+        rotationForMove = rotation - 180
+        endRotation = 180 if 90 > rotation < 270 else 0
+    elif moveDirection == config.Direction.RIGHT:
+        rotationForMove = rotation + 90
+        endRotation = -90
+    else:
+        config.log(f"evalBestMoveDirection, no moveDirection found")
+
+    if rotationForMove > 180:
+        rotationForMove -= 180
+
+    return moveDirection, rotationForMove, endRotation
+
+
+def moveCart(absDegree, distance, speed, allowedMoves=[config.Direction.FORWARD]):
 
     cartOrientation = config.oCart.getYaw()
     config.log(f"goto degree: {int(absDegree)}, distance: {int(distance)}, currOrientation: {cartOrientation}")
 
     rotation = signedAngleDifference(cartOrientation, absDegree)
 
-    config.log(f"request cart rotation by: {int(rotation)} degrees")
-    if config.navManagerServers['cartControl']['simulated']:
+    moveDirection, rotationForMove, endRotation = evalBestMoveDirection(rotation, distance, allowedMoves)
+
+    config.log(f"request cart rotation by: {int(rotationForMove)} degrees")
+    if config.servers['cartControl'].simulated:
         rotateCartRelative(rotation, 150)
         setTargetLocation(distance, absDegree)
         return True
     else:
-        if rotateCartRelative(int(rotation), 150):
+        if rotateCartRelative(int(rotationForMove), 150):
 
             time.sleep(0.5)     # not sure, delay in messaging caused to see it not moving in the next step?
 
@@ -261,7 +324,11 @@ def moveCart(absDegree, distance, speed):
             #posX, posY = config.getCartLocation()
             #config.log(f"move from x,y: {config.oCart.x:.0f},{config.oCart.y:.0f} to {config.oTarget.x:.0f},{config.oTarget.y:.0f}")
 
-            if moveCartWithDirection(config.Direction.FORWARD, distance, speed):    #FORWARD
+            if moveCartWithDirection(moveDirection, distance, speed):
+
+                # check for needed back rotation, may be caused by using sideward movement
+                if endRotation != 0:
+                    rotateCartRelative(endRotation, 150)
                 return True
             else:
                 config.log(f"move failed")
@@ -273,7 +340,7 @@ def moveCart(absDegree, distance, speed):
 
 
 #def move(speed, direction, distanceMm):
-def moveCartWithDirection(moveDirection: config.Direction, distanceMm, speed):
+def moveCartWithDirection(moveDirection: config.Direction, distanceMm, speed, accuracy=50, kinectMonitoring=True):
 
     try:
         degrees = config.oCart.getYaw() + directionDegrees[moveDirection.value] % 360
@@ -282,7 +349,7 @@ def moveCartWithDirection(moveDirection: config.Direction, distanceMm, speed):
         config.oTarget.show = True
         guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP.value})
 
-        config.log(f"moveByDir: dir: {moveDirection}, cartDeg: {config.oCart.getYaw()}, moveDeg: {degrees}, distance: {distanceMm}, start: {config.oCart.getX():.0f},{config.oCart.getY():.0f}, target: {config.oTarget.x:.0f},{config.oTarget.y:.0f}")
+        config.log(f"moveByDir: dir: {moveDirection}, cartDeg: {config.oCart.getYaw()}, moveDeg: {degrees}, distance: {distanceMm:.0f}, start: {config.oCart.getX():.0f},{config.oCart.getY():.0f}, target: {config.oTarget.x:.0f},{config.oTarget.y:.0f}")
         try:
             rpcSend.requestMove(moveDirection, speed, distanceMm)
 
@@ -293,12 +360,13 @@ def moveCartWithDirection(moveDirection: config.Direction, distanceMm, speed):
         while config.oCart.moving:
             time.sleep(0.1)
 
-        if getRemainingDistance() > 50:
+        if getRemainingDistance() > accuracy:
 
             # requested position not reached, retry or stop task??
             #posX, posY = config.getCartLocation()
             #target = config.getTargetLocation()
             config.log(f"move not completed, remaining distance: {getRemainingDistance():.0f}")
+
             msg = f"ERROR move stopped at position: {config.oCart.getX():.0f}/{config.oCart.getY():.0f}, requested: {config.oTarget.x:.0f}/{config.oTarget.y:.0f}"
             config.log(msg)
             raise config.CartError(msg)

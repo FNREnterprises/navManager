@@ -3,7 +3,7 @@ import time
 import os
 import numpy as np
 import rpyc
-import json
+import _pickle as pickle
 import cv2
 
 import config
@@ -26,9 +26,9 @@ def setupEyeCam():
     robotControl.servoSetAutoDetach('head.neck', 5000)
 
 
-def updateMarkerFoundResult(result, cartX, cartY, camYaw):
+def updateMarkerFoundResult(result, camera, cartX, cartY, camYaw):
     """
-    :param result:  list of dict of  {'markerId', 'distanceCamToMarker', 'angleToMarker', 'markerOrientation'}
+    :param result:  list of dict of  {'markerId', 'distanceCamToMarker', 'angleToMarker', 'markerYaw'}
     :param cartX:
     :param cartY:
     :param camYaw:
@@ -41,40 +41,42 @@ def updateMarkerFoundResult(result, cartX, cartY, camYaw):
         markerId = int(markerInfo['markerId'])
         degrees = markerInfo['angleToMarker'] + camYaw
         distance = int(markerInfo['distanceCamToMarker'])
+        markerYaw = int(markerInfo['markerYaw'])
 
         xOffset = int(distance * np.cos(np.radians(int(degrees))))
         yOffset = int(distance * np.sin(np.radians(int(degrees))))
 
         # check whether the marker is already in the list
         appendMarker = False
-        entry = next((item for item in config.markerInfo if item['markerId'] == markerId), None)
+        entry = next((item for item in config.markerList if item.markerId == markerId), None)
         if entry is None:
             appendMarker = True
+            config.log(f"new marker found: {markerId}, distance: {distance}")
         else:
-            if entry['distance'] > distance:
-                index = next(i for i, item in enumerate(config.markerInfo) if item['markerId'] == markerId)
-                del config.markerInfo[index]
+            # check for closer observation distance and use only the closest observation
+            if entry.distanceCamToMarker > distance:
+                config.log(f"update marker information because of closer observation point, distance: {distance:.0f}")
+                index = next(i for i, item in enumerate(config.markerList) if item.markerId == markerId)
+                del config.markerList[index]
                 appendMarker = True
 
         if appendMarker:
-            config.log(f"adding marker: markerId: {markerId}, distance: {distance:.0f}")
-            config.markerInfo.append({
-                'markerId':         markerId,
-                'distance':         distance,
-                'markerLocationX':  cartX + xOffset,
-                'markerLocationY':  cartY + yOffset,
-                'markerAngle':      int(markerInfo['markerOrientation'])})
+            oMarker = config.cMarker()
+            oMarker.markerId = markerId
+            oMarker.cameraType = camera
+            oMarker.camX = cartX
+            oMarker.camY = cartY
+            oMarker.camYaw = camYaw     # cart yaw + head yaw
+            oMarker.angleInImage = degrees
+            oMarker.distanceCamToMarker = distance
+            oMarker.markerX = cartX + xOffset
+            oMarker.markerY = cartY + yOffset
+            oMarker.markerYaw = (camYaw + 90 + markerYaw) % 360
+
+            config.markerList.append(oMarker)
 
     # persist list of markers
-    navMap.saveMarkerInfo()
-
-
-def loadMarkerInfo():
-
-    filename = f"{config.PATH_ROOM_DATA}/{config.room}/markerInfo.json"
-    if os.path.exists(filename):
-        with open(filename, "r") as read_file:
-            config.markerInfo = json.load(read_file)
+    navMap.saveMarkerList()
 
 
 def scanWithHead(startDegrees, endDegrees, steps, lookForMarkers=None):
@@ -106,7 +108,7 @@ def scanWithHead(startDegrees, endDegrees, steps, lookForMarkers=None):
         #cartX, cartY = config.getCartLocation()
         camYaw = int((config.oCart.getYaw() + requestedHeadDegree) % 360)
         
-        if config.navManagerServers['aruco']['simulated']:
+        if config.servers['aruco'].simulated:
             inmoovEyecamImg = np.zeros([25, 25, 3], dtype=np.uint8)
             markerList = []
         else:
@@ -131,16 +133,16 @@ def scanWithHead(startDegrees, endDegrees, steps, lookForMarkers=None):
 
                 config.log(f"check for marker with headYaw: {int(requestedHeadDegree)}, cartOrientation: {config.oCart.getYaw()}")
 
-                if not config.navManagerServers['aruco']['simulated']:
+                if not config.servers['aruco'].simulated:
 
                     markersFound, result = rpcSend.lookForMarkers("EYE_CAM", [])
-                    # result =  list of {'markerId', 'distanceCamToMarker', 'angleToMarker', 'markerOrientation'}
+                    # result =  list of {'markerId', 'distanceCamToMarker', 'angleToMarker', 'markerYaw'}
 
                     if markersFound:
                         config.log(f"markers found: {result}")
-                        updateMarkerFoundResult(result, config.oCart.getX(), config.oCart.getY(), camYaw)
+                        updateMarkerFoundResult(result, 'EYE_CAM', config.oCart.getX(), config.oCart.getY(), camYaw)
 
-                        #print(navGlobal.markerInfo)
+                        #print(navGlobal.markerList)
                         # stop scan if we have found a requested marker
                         for markerInfo in result:
                             if markerInfo['markerId'] in lookForMarkers:

@@ -111,9 +111,9 @@
     <property name="geometry">
      <rect>
       <x>30</x>
-      <y>200</y>
-      <width>241</width>
-      <height>211</height>
+      <y>180</y>
+      <width>300</width>
+      <height>300</height>
      </rect>
     </property>
     <property name="frameShape">
@@ -285,8 +285,8 @@
    <widget class="QCheckBox" name="showCart">
     <property name="geometry">
      <rect>
-      <x>290</x>
-      <y>240</y>
+      <x>30</x>
+      <y>490</y>
       <width>73</width>
       <height>17</height>
      </rect>
@@ -298,8 +298,8 @@
    <widget class="QCheckBox" name="showTarget">
     <property name="geometry">
      <rect>
-      <x>290</x>
-      <y>270</y>
+      <x>30</x>
+      <y>520</y>
       <width>84</width>
       <height>17</height>
      </rect>
@@ -311,8 +311,8 @@
    <widget class="QCheckBox" name="showScanLocations">
     <property name="geometry">
      <rect>
-      <x>290</x>
-      <y>300</y>
+      <x>150</x>
+      <y>490</y>
       <width>123</width>
       <height>17</height>
      </rect>
@@ -324,8 +324,8 @@
    <widget class="QCheckBox" name="showMarkers">
     <property name="geometry">
      <rect>
-      <x>290</x>
-      <y>330</y>
+      <x>150</x>
+      <y>520</y>
       <width>123</width>
       <height>17</height>
      </rect>
@@ -337,8 +337,8 @@
    <widget class="QCheckBox" name="showMovePath">
     <property name="geometry">
      <rect>
-      <x>290</x>
-      <y>360</y>
+      <x>30</x>
+      <y>550</y>
       <width>123</width>
       <height>17</height>
      </rect>
@@ -350,8 +350,8 @@
    <widget class="QSpinBox" name="numMovements">
     <property name="geometry">
      <rect>
-      <x>400</x>
-      <y>360</y>
+      <x>140</x>
+      <y>550</y>
       <width>42</width>
       <height>22</height>
      </rect>
