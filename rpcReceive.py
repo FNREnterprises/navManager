@@ -3,10 +3,9 @@ import rpyc
 import simplejson as json
 
 import config
-import robotControl
-import rpcSend
 import navManager
 import guiUpdate
+import cartHandling
 
 
 class rpcListener(rpyc.Service):
@@ -17,10 +16,7 @@ class rpcListener(rpyc.Service):
 
 
     def on_disconnect(self, conn):
-        clientName = conn._channel.stream.sock.getpeername()
-        config.log(f"navManagerListener on_disconnect received {clientName}")
-        config.servers[clientName].connectionState = 'down'
-        print()
+        config.log(f"on_disconnect got triggered, {conn}")
 
 
     def exposed_lifeSignalUpdate(self, server):
@@ -28,38 +24,49 @@ class rpcListener(rpyc.Service):
         #config.log(f"life signal received from server: {server}")
         if config.servers[server].connectionState == 'try':
             config.servers[server].connectionState = 'connected'
-            guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE.value, 'server': server, 'state': 'connected'})
+            guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE, 'server': server, 'state': 'connected'})
 
 
     def exposed_serverReady(self, server, ready):
         config.log(f"ready={ready} message from server {server} received")
         if ready:  # and not config.servers[server]['serverReady']:
             config.servers[server].connectionState = 'ready'
-            guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE.value, 'server': server, 'state': 'ready'})
-
+            guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE, 'server': server, 'state': 'ready'})
 
         if not ready:  # and config.servers[server]['serverReady']:
             config.servers[server].connectionState = 'connected'
-            guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE.value, 'server': server, 'state': 'connected'})
+            guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE, 'server': server, 'state': 'connected'})
+
+
+    def exposed_servoControlBasicData(self, jsonMsg):
+        # needs to be called by servo control when ready
+
+        config.log(f"getting basic data from servo control")
+        allServoData = json.loads(jsonMsg)
+        config.servoCurrent = allServoData
+        #for d in allServoData:
+        #    config.servoCurrent.update({d['servoName']: d})
+        config.servers["servoControl"].basicDataReceived = True
+
+
+    def exposed_cartControlBasicData(self, jsonMsg):
+        # needs to be called by cart control when ready
+
+        config.log(f"getting basic data from cartControl")
+        #rpcSend.queryCartInfo()
+        #rpcSend.queryBatteries()
+        config.servers["cartControl"].basicDataReceived = True
+
+        #rpcSend.powerKinect(True)
+        # for unknown reason, this ruins the connection with cartControl ?????
 
 
     def exposed_log(self, msg):
         config.othersLog(msg)
 
 
-    def exposed_lowBattery(self, msg):
+    def exposed_lowBattery(self):
         navManager.setTask("dock")
-
-
-    def exposed_startDockingPhase1(self, startRotation, cartMove, endRotation):
-        config.log(f"startDockingPhase1 received from aruco")
-        robotControl.cartMovesDockingPhase1(startRotation, cartMove, endRotation)
-
-
-    def exposed_startDockingPhase2(self, rotation, distance):
-        # this may request an initial small rotation and a move to left or right
-        config.log(f"dockingPhase2: verify proper location befor activating phase2")
-        #robotControl.cartMovesDockingPhase2(rotation, distance)
 
 
     def exposed_dockingFailed(self):
@@ -71,27 +78,35 @@ class rpcListener(rpyc.Service):
         config.oCart.docked = newStatus
 
 
-    def exposed_updateCartInfo(self, cartX, cartY, orientation, cartMoving, cartRotating):
-        config.oCart.setX(cartX)
-        config.oCart.setY(cartY)
-        config.oCart.setYaw(orientation)
-        config.oCart.moving = cartMoving
-        config.oCart.rotating = cartRotating
-        config.oCart.update = time.time()
-        #config.log(f"updateCartInfo received: {config.oCart.getX()}, {config.oCart.getY()}, {config.oCart.getYaw()},  {config.oCart.moving}, {config.oCart.rotating}", publish=False)
-        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CART_INFO.value})
-        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP.value})
+    def exposed_cartProgress(self,
+            magnitude,
+            final,
+            cartX,
+            cartY,
+            degrees,
+            cartMoving,
+            cartRotating):
+
+        cartHandling.updateCartInfo(cartX, cartY, degrees, cartMoving, cartRotating)
+
+        if config.oMoveSteps is not None:
+            config.oMoveSteps.updateMove(magnitude, final)
 
 
-    def exposed_servoUpdate(self, msg):
+    def exposed_updateCartInfo(self, cartX, cartY, degrees, cartMoving, cartRotating):
+        cartHandling.updateCartInfo(cartX, cartY, degrees, cartMoving, cartRotating)
+
+
+
+    def exposed_servoUpdate(self, servoName, msg):
 
         #config.log(f"received a servoUpdate: {msg}")
         servoData = json.loads(msg)
-        config.log(f"servo update for servo: {servoData['servoName']}")
+        #config.log(f"servo update for servo: {servoData['servoName']}")
         try:
-            config.servoCurrent[servoData['servoName']].update(servoData)
+            config.servoCurrent[servoName].update(servoData)
         except KeyError:
-            config.log(f"key error with servo update {servoData}")
+            config.log(f"key error with servo update {servoName}, {servoData}")
 
 
     def exposed_obstacleUpdate(self, data):

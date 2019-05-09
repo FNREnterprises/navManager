@@ -1,6 +1,7 @@
 
 import time
 from datetime import datetime as dt
+import inspect
 
 import logging
 import numpy as np
@@ -44,6 +45,13 @@ obstacleMapFat = None
 fullScanPlan = None
 fullScanPlanFat = None
 
+mapSettings = {
+    'showCart':         True,
+    'showScanLocation': False,
+    'showTarget':       False,
+    'showMarkers':      False,
+    'showMovePath':     False }
+
 scanLocations = []
 markerList = []
 
@@ -52,12 +60,9 @@ robotMovesQueue = deque(maxlen=100)
 #servoCurrent = {'assigned', 'moving', 'detached', 'position', 'degrees', servoName}
 servoCurrent = {}
 
-
 DOCKING_MARKER_ID = 10
 DOCKING_DETAIL_ID = 11
 KINECT_X_RANGE = 60        # degrees of view with Kinect 1, we need 6 cart rotations for full circle
-
-
 
 # list of possible tasks
 tasks = ["restartServers",
@@ -66,9 +71,8 @@ tasks = ["restartServers",
          "rover",
          "checkForPerson",
          "takeCartcamImage",
+         "takeEyecamImage",
          "getDepthImage",
-         "findMarker",
-         "approachTarget",
          "dock",
          "moveCart",
          "stop",
@@ -76,13 +80,15 @@ tasks = ["restartServers",
          "cartMovePose",
          "queryCartInfo",
          "activateKinectPower",
+         "rotateCartAbsolute",
          "exit"]
 
 
 taskStack = []
 task = None
+prevTask = None
 
-target = {'x': 0, 'y': 0, 'orientation': 0, 'show': False}
+target = {'x': 0, 'y': 0, 'degrees': 0, 'show': False}
 oTarget = None
 
 leftArm = {'omoplate': 0, 'shoulder': 0, 'rotate': 0, 'bicep': 0}
@@ -102,7 +108,7 @@ fullScanDone = False
 
 
 # positions where a 360 view has been made and recorded
-_dockingMarkerPosition = None    # position and orientation that showed the docking marker
+_dockingMarkerPosition = None    # position and degrees that showed the docking marker
 
 _arucoMarkers = []
 # a list of markers of type cMarker
@@ -125,6 +131,7 @@ _eyecamImgReceived = False
 
 batteryStatus = None
 
+mapCenterColor = (255,255,255)
 cartColor = (255,255,0)     # cyan
 markerColor = (255,255,0)   # yellow
 targetColor = (0,255,0)     # green
@@ -172,26 +179,42 @@ class cCart:
     def getY(self):
         return round(self._y + self.yCorr)
 
-    def setYaw(self, o):
+    def setDegrees(self, o):
         self._o = int(o)
 
-    def getYaw(self):
+    def getDegrees(self):
         return round(self._o + self.oCorr)
 
 oCart = cCart()
 
+# a sequence of cart moves that can be interrupted and continued
+oMoveSteps = None
+
+from dataslots import with_slots
+from dataclasses import dataclass
+
+@with_slots     # prevents adding dynamic attributes to class
+@dataclass
 class cMarker:
-    def __init__(self):
-        markerId = None
-        cameraType = None
-        camX = None
-        camY = None
-        camYaw = None
-        angleInImage = None
-        distanceCamToMarker = None
-        markerX = None
-        markerY = None
-        markerYaw = None
+    markerId: int = None
+    cameraType: str = None
+    cartX: int = None
+    cartY: int = None
+    cartDegrees: int = None
+    camDegrees: int = None
+    atAngleFromCart: int = None
+    distanceCamToMarker: int = None
+    markerX: int = None
+    markerY: int = None
+    markerDegrees: int = None
+
+    def props(self):
+        pr = {}
+        for name in dir(self):
+            value = getattr(self, name)
+            if not name.startswith('__') and not inspect.ismethod(value):
+                pr[name] = value
+        return pr
 
 
 class CartError(Exception):
@@ -241,24 +264,69 @@ class objectview(object):
         self.__dict__ = d
 
 
+@with_slots
+@dataclass
 class cServer:
-    def __init__(self):
-        simulated = False
-        startupTime = None
-        startRequested = None
-        ip =  None
-        port = None
-        conn =  None
-        lifeSignalRequest = None
-        lifeSignalReceived = None
-        connectionState = 'unknown'
-        basicDataReceived = False
+        simulated: bool
+        startupTime: int
+        startRequested: None
+        ip: str
+        port: int
+        conn: None
+        lifeSignalRequest: time
+        lifeSignalReceived: time
+        connectionState: str
+        basicDataReceived: bool
 
 # Kinect must be started first, otherwise driver complains
-servers = {'kinect': cServer(),
-           'aruco':  cServer(),
-           'servoControl': cServer(),
-           'cartControl': cServer()
+servers = {'kinect': cServer(
+                simulated = False,
+                startupTime = 10,
+                startRequested = None,
+                ip =  marvin,
+                port = 20003,
+                conn =  None,
+                lifeSignalRequest = time.time(),
+                lifeSignalReceived = time.time()+1,
+                connectionState = 'unknown',
+                basicDataReceived = False
+                ),
+           'aruco':  cServer(
+                simulated = False,
+                startupTime = 10,
+                startRequested = None,
+                ip =  marvin,
+                port = 20002,
+                conn =  None,
+                lifeSignalRequest = time.time(),
+                lifeSignalReceived = time.time()+1,
+                connectionState = 'unknown',
+                basicDataReceived = False
+           ),
+           'servoControl': cServer(
+                simulated = False,
+                startupTime = 10,
+                startRequested = None,
+                ip =  marvin,
+                port = 20004,
+                conn =  None,
+                lifeSignalRequest = time.time(),
+                lifeSignalReceived = time.time()+1,
+                connectionState = 'unknown',
+                basicDataReceived = False
+),
+           'cartControl': cServer(
+                simulated = False,
+                startupTime = 10,
+                startRequested = None,
+                ip =  marvin,
+                port = 20001,
+                conn =  None,
+                lifeSignalRequest = time.time(),
+                lifeSignalReceived = time.time()+1,
+                connectionState = 'unknown',
+                basicDataReceived = False
+                )
            }
 
 def defineServers():
@@ -330,11 +398,11 @@ def othersLog(msg):
 
 
 
-def setDockingMarkerPosition(location, orientation):
+def setDockingMarkerPosition(location, degrees):
     
     global _dockingMarkerPosition
 
-    _dockingMarkerPosition = [location, orientation]
+    _dockingMarkerPosition = [location, degrees]
 
 
 def getDockingMarkerPosition():
@@ -343,9 +411,9 @@ def getDockingMarkerPosition():
 
 
 def distDegToScanPos(index):
-    '''
+    """
     from the current cart position calc distance and degree to any other scan position
-    '''
+    """
     dx = scanLocations[index][0] - oCart.getX()
     dy = scanLocations[index][1] - oCart.getY()
     directionDegrees = np.degrees(np.arctan2(dx, dy))
@@ -384,6 +452,17 @@ def allowCartRotation(newStatus):
             _allowCartRotation = True
     else:
         _allowCartRotation = False
+
+
+def signedAngleDifference(start, end):
+    """
+    calculate angle difference in range -180 .. 180 between start and end degrees in range 0 .. 360
+    """
+    diff = end - start
+    d = abs(diff) % 360
+    value = 360 - d if d > 180 else d
+    sign = 1 if (0 <= diff <= 180) or (-180 >= diff >= -360) else -1
+    return sign * value
 
 
 #def setCartDocked(newStatus):

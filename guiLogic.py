@@ -1,6 +1,8 @@
 
 import numpy as np
 import cv2
+import simplejson as json
+import os
 
 from PyQt5 import QtWidgets, QtGui
 from PyQt5.QtCore import Qt, pyqtSlot
@@ -12,6 +14,13 @@ import navMap
 import watchDog
 import navManager
 
+
+def saveMapSettings():
+    a = open("D:/Projekte/InMoov/navManager/mapSettings.json", "w")
+    a.write(json.dumps(config.mapSettings))
+    a.close()
+
+
 class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
 
     def __init__(self, *args, **kwargs):
@@ -22,6 +31,19 @@ class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
         self.threads = []
 
         self.move(100,100)
+
+        if os.path.isfile("D:/Projekte/InMoov/navManager/mapSettings.json"):
+            config.mapSettings = json.load(open("D:/Projekte/InMoov/navManager/mapSettings.json"))
+        if config.mapSettings['showCart']:
+            self.showCart.setChecked(config.mapSettings['showCart'])
+        if config.mapSettings['showScanLocations']:
+            self.showScanLocations.setChecked(config.mapSettings['showScanLocations'])
+        if config.mapSettings['showTarget']:
+            self.showTarget.setChecked(config.mapSettings['showTarget'])
+        if config.mapSettings['showMarkers']:
+            self.showMarkers.setChecked(config.mapSettings['showMarkers'])
+        if config.mapSettings['showMovePath']:
+            self.showMovePath.setChecked(config.mapSettings['showMovePath'])
 
         # mark simulated subTasks
         if config.servers['aruco'].simulated:
@@ -74,19 +96,29 @@ class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
         watchDog.tryToRestartServer(server)
 
     def on_showCart_stateChanged(self):
-        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP.value})
+        config.mapSettings['showCart'] = self.showCart.isChecked()
+        saveMapSettings()
+        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP})
+
+    def on_showScanLocations_stateChanged(self):
+        config.mapSettings['showScanLocations'] = self.showScanLocations.isChecked()
+        saveMapSettings()
+        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP})
 
     def on_showTarget_stateChanged(self):
-        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP.value})
-
-    def on_showScanLocation_stateChanged(self):
-        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP.value})
+        config.mapSettings['showTarget'] = self.showTarget.isChecked()
+        saveMapSettings()
+        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP})
 
     def on_showMarkers_stateChanged(self):
-        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP.value})
+        config.mapSettings['showMarkers'] = self.showMarkers.isChecked()
+        saveMapSettings()
+        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP})
 
     def on_showMovePath_stateChanged(self):
-        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP.value})
+        config.mapSettings['showMovePath'] = self.showMovePath.isChecked()
+        saveMapSettings()
+        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP})
 
 
     def connectionMarkup(self, state):
@@ -108,11 +140,11 @@ class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
 
 
     # this is called by guiUpdate ...emit...
-    @pyqtSlot(int, object)
-    def updateGui(self, updateType, data):
+    @pyqtSlot(object)
+    def updateGui(self, data):
 
-        #print(f"in updateGui, {updateType}, {data}")
-        if updateType == guiUpdate.updType.CONNECTION_UPDATE.value:
+        #print(f"in updateGui, {data}")
+        if data['type'] == guiUpdate.updType.CONNECTION_UPDATE:
 
             oData = config.objectview(data)
             config.log(f"updateGui, CONNECTION_UPDATE, server: {oData.server}, state: {oData.state}")
@@ -137,22 +169,22 @@ class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
                 config.log(f"guiLogic, CONNECTION_UPDATE received for unknown server {oData.server}")
 
 
-        if updateType == guiUpdate.updType.MAP.value:
+        if data['type'] == guiUpdate.updType.MAP:
 
             #config.log(f"start gui map update")
-            colImg = cv2.cvtColor(config.floorPlan, cv2.COLOR_GRAY2RGB)
+            try:
+                colImg = cv2.cvtColor(config.floorPlan, cv2.COLOR_GRAY2RGB)
+            except Exception as e:
+                config.log(f"can not show map: {e}")
+                return
 
-            # add cart position and orientation
+            # draw hair cross at 0,0
+            cv2.line(colImg, (490,500), (510, 500), config.mapCenterColor , 1)
+            cv2.line(colImg, (500, 490), (500, 510), config.mapCenterColor, 1)
+
+            # add cart position and degrees
             if self.showCart.isChecked():
-                mapX, mapY = navMap.evalMapLocation(config.oCart.getX(), config.oCart.getY())
-                #config.log(f"cart pos: {config.oCart.x}/{config.oCart.y}, map: {mapX}/{mapY}")
                 navMap.addCart(colImg)
-
-                # draw hair cross at 0,0
-                hairCrossColor = (0,0,255)
-                cv2.line(colImg, (495,500), (505, 500), hairCrossColor , 1)
-                cv2.line(colImg, (500, 495), (500, 505), hairCrossColor, 1)
-
 
             # show target if requested
             if self.showTarget.isChecked():
@@ -169,7 +201,7 @@ class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
             # show markers if requested
             if self.showMarkers.isChecked():
                 for marker in config.markerList:
-                    navMap.addMarker(colImg, marker.markerX, marker.markerY, marker.markerYaw)
+                    navMap.addMarker(colImg, marker.markerX, marker.markerY, marker.markerDegrees)
 
             # limit map to show only drawn objects, no black border
             if config.floorPlan is not None:
@@ -197,15 +229,15 @@ class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
                     #config.log(f"end gui map update")
 
 
-        if updateType == guiUpdate.updType.CART_INFO.value:
+        if data['type'] == guiUpdate.updType.CART_INFO:
 
-            self.cartOrientation.setText(f"{config.oCart.getYaw()}")
+            self.cartDegrees.setText(f"{config.oCart.getDegrees()}")
             self.cartLocation.setText(f"{config.oCart.getX():4.0f}, {config.oCart.getY():4.0f}")
             mapX, mapY = navMap.evalMapLocation(config.oCart.getX(), config.oCart.getY())
             self.mapLocation.setText(f"{mapX:4.0f}, {mapY:4.0f}")
 
 
-        if updateType == guiUpdate.updType.BATTERY_UPDATE.value:
+        if data['type'] == guiUpdate.updType.BATTERY_UPDATE:
             if config.batteryStatus['plugged']:
                 msg = f"plugged, {config.batteryStatus['percent']}%"
             else:

@@ -138,7 +138,7 @@
     <property name="title">
      <string>Cart</string>
     </property>
-    <widget class="QLabel" name="cartOrientation">
+    <widget class="QLabel" name="cartDegrees">
      <property name="geometry">
       <rect>
        <x>80</x>
@@ -148,7 +148,7 @@
       </rect>
      </property>
      <property name="text">
-      <string>Orientation</string>
+      <string>Degrees</string>
      </property>
     </widget>
     <widget class="QLabel" name="cartLocation">
@@ -256,7 +256,7 @@
      <string>Map Location: </string>
     </property>
    </widget>
-   <widget class="QLabel" name="cartOrientation_2">
+   <widget class="QLabel" name="cartDegrees_2">
     <property name="geometry">
      <rect>
       <x>240</x>
@@ -266,7 +266,7 @@
      </rect>
     </property>
     <property name="text">
-     <string>Orientation: </string>
+     <string>Degrees: </string>
     </property>
    </widget>
    <widget class="QLabel" name="Location_2">

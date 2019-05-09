@@ -26,7 +26,7 @@ def listenForCommand(recognizer, microphone):
     # try recognizing the speech in the recording
     # if a RequestError or UnknownValueError exception is caught,
     #     update the response object accordingly
-    recognizer.Timeouts.EndSilenceTimeout = TimeSpan.FromSeconds(1.2)
+    #recognizer.Timeouts.EndSilenceTimeout = TimeSpan.FromSeconds(1.2)
     try:
         response["transcription"] = recognizer.recognize_google(audio)
     except sr.RequestError:

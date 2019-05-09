@@ -1,12 +1,11 @@
 
 import time
 import rpyc
-import simplejson as json
 
 import config
 import rpcSend
+import rpcReceive
 import guiUpdate
-
 
 
 SERVER_WATCH_INTERVAL = 5
@@ -14,14 +13,24 @@ SERVER_WATCH_INTERVAL = 5
 
 def tryToRestartServer(server):
 
+    if config.taskOrchestrator.closed:
+        # we have lost connection with taskOrchestrator, try to reconnect
+        config.log(f"connection with taskOrchestrator is closed, try to connect")
+        try:
+            config.taskOrchestrator = rpyc.connect(config.marvin, 20000, service = rpcReceive.rpcListener)
+        except Exception as e:
+            config.log(f"could not connect with taskOrchestrator, {e}")
+        return
+
     oServer = config.servers[server]
     oServer.conn = None
     oServer.startRequested = time.time()
-    guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE.value, 'server': server, 'state': 'down'})
+    guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE, 'server': server, 'state': 'down'})
     config.log(f"trying to restart server {server}")
     try:
         config.taskOrchestrator.root.restartServer(server)
     except Exception as e:
+        config.taskOrchestrator.close()
         config.log(f"failure on requesting restart of server {server}, {e}")
 
 
@@ -60,10 +69,10 @@ def watchConnection(server):
 
             if lifeSignalRoundTrip < 0:
                 config.log(f"life signal missing from server '{server}', roundTrip: {lifeSignalRoundTrip:.0f} ")
-                guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE.value, 'server': server, 'state': 'down'})
+                guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE, 'server': server, 'state': 'down'})
             elif lifeSignalRoundTrip > SERVER_WATCH_INTERVAL + 2:
                 config.log(f"life signal round trip too slow with server '{server}', roundTrip: {lifeSignalRoundTrip}")
-                guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE.value, 'server': server, 'state': 'down'})
+                guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE, 'server': server, 'state': 'down'})
                 oServer.connectionState = 'down'
                 oServer.conn = None
             else:
@@ -78,7 +87,7 @@ def watchConnection(server):
                 #########################
                 config.log(f"try to connect with '{server}' at {oServer.ip}, {oServer.port}")
                 config.servers[server].connectionState = 'try'
-                guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE.value, 'server': server, 'state': 'try'})
+                guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE, 'server': server, 'state': 'try'})
                 try:
                     oServer.conn = rpyc.connect(oServer.ip, oServer.port, config={'sync_request_timeout': 10})
                     config.log(f"connection established with {server}")
@@ -115,33 +124,6 @@ def watchConnection(server):
                 except Exception as e:
                     config.log(f"failure requesting life signal from '{server}', trying to restart server")
                     tryToRestartServer(server)
-
-
-                ############################################################
-                # place to get first time basic information from servers
-                ############################################################
-                if server == 'servoControl':
-
-                    # get current servo information
-                    if config.servers[server].connectionState == 'ready' and not config.servers[server].basicDataReceived:
-                        config.log(f"first connection with servoControl, get basic data")
-                        config.servoCurrent = {}
-                        jsonMsg = config.servers[server].conn.root.exposed_getServoCurrentList()
-                        allServoData = json.loads(jsonMsg)
-                        for d in allServoData:
-                            config.servoCurrent.update({d['servoName']: d})
-                        config.servers[server].basicDataReceived = True
-
-                if server == 'cartControl':
-                    if config.servers[server].connectionState == 'ready' and not config.servers[server].basicDataReceived:
-
-                        config.log(f"first connection with cartControl, query cart info")
-                        rpcSend.queryCartInfo()
-                        rpcSend.queryBatteries()
-                        config.servers[server].basicDataReceived = True
-
-                        #rpcSend.powerKinect(True)
-                        # for unknown reason, this ruins the connection with cartControl ?????
 
 
         # watch interval actions

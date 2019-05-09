@@ -32,7 +32,7 @@ class GuiUpdateThread(QtCore.QThread):
 
     # signal for gui update
     # raises guiLogic.updateGui
-    updateGui = QtCore.pyqtSignal(int, object)
+    updateGui = QtCore.pyqtSignal(object)
 
     def __init__(self):
         QtCore.QThread.__init__(self)
@@ -56,5 +56,5 @@ class GuiUpdateThread(QtCore.QThread):
 
                 #if updateData['type'] == guiLogic.updType.CONNECTION_UPDATE.value:
 
-                self.updateGui.emit(updateData['type'], updateData) # see guiLogic.updateGui
+                self.updateGui.emit(updateData) # see guiLogic.updateGui
 

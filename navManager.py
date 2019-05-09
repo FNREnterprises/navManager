@@ -10,7 +10,6 @@ import threading
 from PyQt5 import QtWidgets
 
 import config
-import marker
 
 import rpcReceive
 import rpcSend
@@ -64,46 +63,52 @@ def setup():
     setTask("notask")
 
     # optional: set simulation status of subtasks
-    #rpcSend.setSimulationMask(kinect=False, aruco=False, cartControl=False, servoControl=False)
-    rpcSend.setSimulationMask(kinect=True, aruco=False, cartControl=False, servoControl=False)
+    rpcSend.setSimulationMask(kinect=False, aruco=False, cartControl=False, servoControl=False)
+    #rpcSend.setSimulationMask(kinect=True, aruco=True, cartControl=False, servoControl=True)
 
     # wait for log listener to start up
     time.sleep(1)
 
+    useTaskOrchestrator = True
+    if useTaskOrchestrator:
 
-    # check for running task orchestrator on subsystem
-    subSystemIp = "192.168.0.17"
-    config.log(f"trying to contact taskOrchestrator on subsystem {subSystemIp}:20000")
 
-    try:
-        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE.value, 'server': 'taskOrchestrator', 'state': 'try'})
-        config.taskOrchestrator = rpyc.connect(subSystemIp, 20000, service = rpcReceive.rpcListener)
-    except Exception as e:
-        config.log(f"could not connect with taskOrchestrator, {e}")
-        os._exit(1)
+        # check for running task orchestrator on subsystem
+        config.log(f"trying to contact taskOrchestrator on subsystem {config.marvin}:20000")
 
-    running = False
-    config.log(f"connect with taskOrchestrator successful, try to getLifeSignal")
-    good = False
-    try:
-        good = config.taskOrchestrator.root.exposed_getLifeSignal(config.MY_IP, config.MY_RPC_PORT)
-    except Exception as e:
-        config.log(f"failed to get response, taskOrchestrator on {subSystemIp} not running?")
-        os._exit(2)
+        try:
+            guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE, 'server': 'taskOrchestrator', 'state': 'try'})
+            config.taskOrchestrator = rpyc.connect(config.marvin, 20000, service = rpcReceive.rpcListener)
+        except Exception as e1:
+            config.log(f"could not connect with taskOrchestrator, {e1}")
+            os._exit(1)
 
-    if good:
-        config.log(f"life signal from task orchestrator received")
-        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE.value, 'server': 'taskOrchestrator', 'state': 'ready'})
-    else:
-        config.log(f"could not get life signal from task orchestrator on subsystem {subSystemIp}")
-        os._exit(3)
+        config.log(f"connect with taskOrchestrator successful, try to getLifeSignal")
+        good = False
+        try:
+            good = config.taskOrchestrator.root.exposed_getLifeSignal(config.MY_IP, config.MY_RPC_PORT)
+        except Exception as e0:
+            try:
+                config.taskOrchestrator.close()
+            except Exception as e1:
+                config.log(f"exception on close connection with taskOrchestrator {e1}")
 
-    for server in config.servers:
-        if not config.servers[server].simulated:
-            config.log(f"start server thread for {server}")
-            serverThread = threading.Thread(target=watchDog.watchConnection, args={server})
-            serverThread.setName(server)
-            serverThread.start()
+            config.log(f"failed to get response, taskOrchestrator on {config.marvin} not running?")
+            os._exit(2)
+
+        if good:
+            config.log(f"life signal from task orchestrator received")
+            guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE, 'server': 'taskOrchestrator', 'state': 'ready'})
+        else:
+            config.log(f"could not get life signal from task orchestrator on subsystem {config.marvin}")
+            os._exit(3)
+
+        for server in config.servers:
+            if not config.servers[server].simulated:
+                config.log(f"start server thread for {server}")
+                serverThread = threading.Thread(target=watchDog.watchConnection, args={server})
+                serverThread.setName(server)
+                serverThread.start()
 
 
     navMap.loadMapInfo()
@@ -118,16 +123,17 @@ def setup():
         setTask('noTask')
 
     if config.floorPlan is not None:
-        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP.value})
+        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP})
 
-    guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CART_INFO.value})
+    guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CART_INFO})
 
     # wait for ready messages from servers
     for _ in range(15):
         allReady = True
         for server in config.servers:
-            if not config.servers[server].connectionState == 'ready':
-                allReady = False
+            if not config.servers[server].simulated:
+                if not config.servers[server].connectionState == 'ready':
+                    allReady = False
 
         if not allReady:
             time.sleep(1)

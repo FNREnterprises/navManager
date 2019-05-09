@@ -8,10 +8,15 @@ import navManager
 import winsound
 
 
-def connected(server):
+
+def simulated(server):
     if config.servers[server].simulated:
         config.log(f"{server} simulated")
-        return False
+        return True
+    return False
+
+
+def connected(server):
     if config.servers[server].conn is None:
         config.log(f"no {server} connection established")
         return False
@@ -53,16 +58,16 @@ def neededServersRunning(serversNeeded):
 def queryCartInfo():
     """
     query cart task for current values
-    cartOrientation, cartLocationX, cartLocationY, cartMoving, cartRotating
+    cartDegrees, cartLocationX, cartLocationY, cartMoving, cartRotating
     """
     if connected('cartControl'):
-        #cartOrientation, cartLocationX, cartLocationY, cartMoving, cartRotating = config.servers['cartControl'].conn.root.exposed_getCartInfo()
+        #cartDegrees, cartLocationX, cartLocationY, cartMoving, cartRotating = config.servers['cartControl'].conn.root.exposed_getCartInfo()
         x,y,o,config.oCart.moving,config.oCart.rotating = config.servers['cartControl'].conn.root.exposed_getCartInfo()
         config.oCart.setX(x)
         config.oCart.setY(y)
-        config.oCart.setYaw(o)
-        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CART_INFO.value})
-        config.log(f"new CartInfo: x: {config.oCart.getX()}, y: {config.oCart.getY()}, yaw: {config.oCart.getYaw()}, moving: {config.oCart.moving}, rotating: {config.oCart.rotating}")
+        config.oCart.setDegrees(o)
+        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CART_INFO})
+        config.log(f"new CartInfo: x: {config.oCart.getX()}, y: {config.oCart.getY()}, degrees: {config.oCart.getDegrees()}, moving: {config.oCart.moving}, rotating: {config.oCart.rotating}")
     else:
         config.log(f"no connection with cartControl")
 
@@ -74,7 +79,7 @@ def queryBatteries():
 
         if config.batteryStatus is not None:
             #config.log(f"received battery info")
-            guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.BATTERY_UPDATE.value})
+            guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.BATTERY_UPDATE})
 
             if config.batteryStatus['percent'] < 20:
                 winsound.PlaySound('sound.wav', winsound.SND_FILENAME)
@@ -102,10 +107,10 @@ def getCartcamImage():
         return None
 
 
-def getDepth(orientation):
+def getDepth(degrees):
     if connected('kinect'):
         try:
-            return rpyc.classic.obtain(config.servers['kinect'].conn.root.exposed_getDepth(orientation))
+            return rpyc.classic.obtain(config.servers['kinect'].conn.root.exposed_getDepth(degrees))
 
         except Exception as e:
             config.log(f"could not get depth image: {e}")
@@ -120,7 +125,6 @@ def checkForObstacle():
     try:
         config.servers['kinect'].conn.root.exposed_startMonitoring()
     except Exception as e:
-        success = False
         config.log(f"could not request monitoring {e}")
 
     # obstacles should get published
@@ -130,11 +134,21 @@ def checkForObstacle():
         config.servers['kinect'].conn.root.exposed_stopMonitoring()
 
     except Exception as e:
-        success = False
         config.log(f"could not request monitoring {e}")
 
 
+def requestRotation(direction, speed, relativeAngle):
+
+    # request rotation from cart
+    config.oCart.rotating = True
+    if direction == config.Direction.ROTATE_LEFT:
+        config.servers['cartControl'].conn.root.exposed_rotateRelative(relativeAngle, speed)
+    else:
+        config.servers['cartControl'].conn.root.exposed_rotateRelative(-relativeAngle, speed)
+
+
 def requestMove(direction, speed, distanceMm):
+
     if connected('cartControl'):
         config.oCart.moving = True
         config.servers['cartControl'].conn.root.exposed_move(direction.value, int(speed), int(distanceMm))
@@ -157,17 +171,17 @@ def adjustCartPosition(x, y, o):
 def lookForMarkers(camera, markerIdList):
     """
     returns a list of dict with attribs:
-    {'markerId', 'distanceCamToMarker', 'angleToMarker', 'markerYaw'}
+    {'markerId', 'distanceCamToMarker', 'angleToMarker', 'markerDegrees'}
     :param camera: EYE_CAM or CART_CAM
     :param markerIdList: list of markerId's to look for, may be empty to return all markers found
     :return:
     """
     if connected('aruco'):
         try:
-            result = rpyc.classic.obtain(config.servers['aruco'].conn.root.exposed_findMarkers(camera, markerIdList, config.oCart.getYaw()))
+            result = rpyc.classic.obtain(config.servers['aruco'].conn.root.exposed_findMarkers(camera, markerIdList, config.oCart.getDegrees()))
         except Exception as e:
             config.log(f"could not request marker evaluation: {e}")
-            return None
+            return False
 
         #result = config.servers['aruco'].conn.root.exposed_findMarkers(camera, markerId)
         return len(result) > 0, result
