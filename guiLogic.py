@@ -11,7 +11,7 @@ import config
 import gui
 import guiUpdate
 import navMap
-import watchDog
+import threadWatchConnections
 import navManager
 
 
@@ -46,14 +46,10 @@ class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
             self.showMovePath.setChecked(config.mapSettings['showMovePath'])
 
         # mark simulated subTasks
-        if config.servers['aruco'].simulated:
-            self.aruco.setCheckState(Qt.PartiallyChecked)
         if config.servers['cartControl'].simulated:
             self.cartControl.setCheckState(Qt.PartiallyChecked)
-        if config.servers['servoControl'].simulated:
-            self.servoControl.setCheckState(Qt.PartiallyChecked)
-        if config.servers['kinect'].simulated:
-            self.kinect.setCheckState(Qt.PartiallyChecked)
+        if config.servers['robotControl'].simulated:
+            self.robotControl.setCheckState(Qt.PartiallyChecked)
 
         # button group for robot commands
         self.button_group = QtWidgets.QButtonGroup(self)
@@ -93,7 +89,7 @@ class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
     def on_restart_clicked(self, b):
         server = b.toolTip()
         config.log(f"server to restart: {server}")
-        watchDog.tryToRestartServer(server)
+        threadWatchConnections.tryToRestartServer(server)
 
     def on_showCart_stateChanged(self):
         config.mapSettings['showCart'] = self.showCart.isChecked()
@@ -153,15 +149,9 @@ class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
             if oData.server == 'taskOrchestrator':
                 self.taskOrchestrator.setChecked(checked)
                 self.taskOrchestrator.setStyleSheet(style)
-            elif oData.server == 'aruco':
-                self.aruco.setChecked(checked)
-                self.aruco.setStyleSheet(style)
-            elif oData.server == 'kinect':
-                self.kinect.setChecked(checked)
-                self.kinect.setStyleSheet(style)
-            elif oData.server == 'servoControl':
-                self.servoControl.setChecked(checked)
-                self.servoControl.setStyleSheet(style)
+            elif oData.server == 'robotControl':
+                self.robotControl.setChecked(checked)
+                self.robotControl.setStyleSheet(style)
             elif oData.server == 'cartControl':
                 self.cartControl.setChecked(checked)
                 self.cartControl.setStyleSheet(style)
@@ -182,15 +172,14 @@ class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
             cv2.line(colImg, (490,500), (510, 500), config.mapCenterColor , 1)
             cv2.line(colImg, (500, 490), (500, 510), config.mapCenterColor, 1)
 
-            # add cart position and degrees
+            # add cart at position and degrees
             if self.showCart.isChecked():
-                navMap.addCart(colImg)
+                degrees = config.oCart.getCartYaw()
+                navMap.addCart(colImg, config.oCart.getCartX(), config.oCart.getCartY(), config.oCart.getCartYaw(), config.oCart.mapColor)
 
             # show target if requested
             if self.showTarget.isChecked():
-                targetColor = (0,255,0)
-                targetX, targetY = navMap.evalMapLocation(config.oTarget.x, config.oTarget.y)
-                cv2.circle(colImg,(targetX,targetY), 3, targetColor, -1)
+                navMap.addCart(colImg, config.oTarget.getCartX(), config.oTarget.getCartY(), config.oCart.getCartYaw(), config.oTarget.mapColor)
 
             # show scanLocations if requested
             if self.showScanLocations.isChecked():
@@ -231,9 +220,9 @@ class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
 
         if data['type'] == guiUpdate.updType.CART_INFO:
 
-            self.cartDegrees.setText(f"{config.oCart.getDegrees()}")
-            self.cartLocation.setText(f"{config.oCart.getX():4.0f}, {config.oCart.getY():4.0f}")
-            mapX, mapY = navMap.evalMapLocation(config.oCart.getX(), config.oCart.getY())
+            self.cartDegrees.setText(f"{config.oCart.getCartYaw()}")
+            self.cartLocation.setText(f"{config.oCart.getCartX():4.0f}, {config.oCart.getCartY():4.0f}")
+            mapX, mapY = navMap.evalMapLocation(config.oCart.getCartX(), config.oCart.getCartY())
             self.mapLocation.setText(f"{mapX:4.0f}, {mapY:4.0f}")
 
 

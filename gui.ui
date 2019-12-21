@@ -58,7 +58,7 @@
       <bool>true</bool>
      </property>
     </widget>
-    <widget class="QCheckBox" name="servoControl">
+    <widget class="QCheckBox" name="robotControl">
      <property name="geometry">
       <rect>
        <x>10</x>
@@ -68,7 +68,7 @@
       </rect>
      </property>
      <property name="text">
-      <string>servoControl</string>
+      <string>robotControl</string>
      </property>
      <property name="tristate">
       <bool>true</bool>

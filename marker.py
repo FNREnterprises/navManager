@@ -4,14 +4,20 @@ import numpy as np
 import rpyc
 import cv2
 
+import inmoovGlobal
 import config
 import rpcSend
-import robotControl
+import robotHandling
 import navMap
+import aruco
+
 
 rpyc.core.protocol.DEFAULT_CONFIG['allow_pickle'] = True
 
-neckAngles = (0,-30)    # 2 different angles in degrees
+neckAngles = [{"neckAngle": inmoovGlobal.pitchWallWatchDegrees, "cam": inmoovGlobal.HEAD_DEPTH},
+              {"neckAngle": 0, "cam": inmoovGlobal.EYE_CAM},
+              {"neckAngle": -20, "cam": inmoovGlobal.EYE_CAM}]
+
 
 foundMarkers = []
 rotheadMoveDuration = 800
@@ -21,7 +27,7 @@ def setupEyeCam():
     move head into position for taking wall pictures
     """
     config.log(f"set neck autoDetach to 5 sec")
-    robotControl.servoSetAutoDetach('head.neck', 5000)
+    robotHandling.servoSetAutoDetach('head.neck', 5000)
 
 
 def updateMarkerFoundResult(result, camera, cartX, cartY, cartDegrees, camDegrees):
@@ -97,78 +103,92 @@ def scanWithHead(startDegrees, endDegrees, steps, lookForMarkers=None):
 
     # create a list of head rotations for the requested scan
     rotheadDegreesList = list(np.linspace(startDegrees, endDegrees, steps))
+
+    # create a list of neck positions for each head yaw
     neckDegreesList = list(neckAngles)
 
     # start with closer headdegrees
-    _, position, _ = robotControl.servoGetPosition('head.rothead')
+    _, position, _ = robotHandling.servoGetPosition('head.rothead')
     if position < 90:
         rotheadDegreesList.reverse()
 
-    _, position, _ = robotControl.servoGetPosition('head.neck')
+    _, position, _ = robotHandling.servoGetPosition('head.neck')
     if position < 90:
         neckDegreesList.reverse()
 
 
     while len(rotheadDegreesList) > 0:
 
-        requestedHeadDegree = int(rotheadDegreesList.pop())
+        requestedHeadYaw = int(rotheadDegreesList.pop())
         #robotControl.sendMrlCommand("i01.head.rothead", "moveToBlocking", str(requestedHeaddegrees))
-        robotControl.servoMoveToDegreesBlocking('head.rothead', requestedHeadDegree, 250)
+        #robotHandling.servoMoveToDegreesBlocking('head.rothead', requestedHeadYaw, 250)
+        robotHandling.servoMoveToDegrees('head.rothead', requestedHeadYaw, 250)
         time.sleep(0.2)     # make sure head is at full stop
 
         #cartX, cartY = config.getCartLocation()
-        camDegrees = requestedHeadDegree
-        cartDegrees = config.oCart.getDegrees()
+        camDegrees = requestedHeadYaw
+        cartDegrees = config.oCart.getCartYaw()
         absDegreeImage = (cartDegrees + camDegrees) % 360
 
-        if config.servers['aruco'].simulated:
-            inmoovEyecamImg = np.zeros([25, 25, 3], dtype=np.uint8)
-            markerList = []
-        else:
 
-            for i in range(2):
+        # with same rothead position use a upper and lower neck position for marker scan
+        for neckPos in neckDegreesList:
 
-                robotControl.servoMoveToDegreesBlocking('head.neck', neckDegreesList[i], 400)
-                # on the down move of the head we need more time for a stable picture
-                time.sleep(0.3)
+            # take depth only in rothead 0 position
+            if requestedHeadYaw == 0 and neckPos['cam'] != inmoovGlobal.HEAD_DEPTH:
+                continue
 
-                config.log(f"take eyecam image: rothead: {requestedHeadDegree}, neck: {neckDegreesList[i]}")
-                inmoovEyecamImg = rpcSend.getEyecamImage()
+            #robotControl.servoMoveToDegreesBlocking('head.neck', neckDegreesList[i], 400)
+            robotHandling.servoMoveToDegrees('head.neck', neckPos['neckAngle'], 600)
+            # on the down move of the head we need more time for a stable picture
+            #time.sleep(0.3)
 
-                if inmoovEyecamImg is None:
-                    config.log(f"could not acquire an eyecam image, stop current task")
+            #
+            if neckPos['cam'] == inmoovGlobal.EYE_CAM:
+                config.log(f"take eyecam image: rothead: {requestedHeadYaw}, neck: {neckPos['neckAngle']}")
+                config.eyecamImage = rpcSend.getImage(inmoovGlobal.EYE_CAM)
+
+                if config.eyecamImage is None:
+                    config.log(f"WARNING: could not acquire an eyecam image, stop current task")
                     return False
 
-                imageName = navMap.buildImageName(config.oCart.getX(), config.oCart.getY(), absDegreeImage, neckDegreesList[i])
+                imageName = navMap.buildImageName(config.oCart.getCartX(), config.oCart.getCartY(), absDegreeImage, neckDegreesList[i]['neckAngle'])
                 filename = f"{config.PATH_ROOM_DATA}/{config.room}/wallImages/{imageName}.jpg"
-                cv2.imwrite(filename, inmoovEyecamImg)
+                cv2.imwrite(filename, config.eyecamImage)
                 config.log(f"wallImage: {filename}")
 
-                config.log(f"check for marker with headdegrees: {int(requestedHeadDegree)}, cartDegrees: {config.oCart.getDegrees()}")
+                config.log(f"check for marker with headdegrees: {int(requestedHeadYaw)}, cartDegrees: {config.oCart.getCartYaw()}")
 
-                if not config.servers['aruco'].simulated:
+                markersFound = aruco.lookForMarkers("EYE_CAM", [], config.oHead.getHeadYaw())
+                # result =  list of {'markerId', 'distanceCamToMarker', 'angleToMarker', 'markerDegrees'}
 
-                    markersFound, result = rpcSend.lookForMarkers("EYE_CAM", [])
-                    # result =  list of {'markerId', 'distanceCamToMarker', 'angleToMarker', 'markerDegrees'}
+                if markersFound:
+                    config.log(f"markers found: {markersFound}")
+                    updateMarkerFoundResult(markersFound, 'EYE_CAM', config.oCart.getCartX(), config.oCart.getCartY(), cartDegrees, camDegrees)
 
-                    if markersFound:
-                        config.log(f"markers found: {result}")
-                        updateMarkerFoundResult(result, 'EYE_CAM', config.oCart.getX(), config.oCart.getY(), cartDegrees, camDegrees)
+                    #print(navGlobal.markerList)
+                    # stop scan if we have found a requested marker
+                    for markerInfo in markersFound:
+                        if markerInfo['markerId'] in lookForMarkers:
+                            config.log(f"requested marker found, markerId: {markerInfo['markerId']}")
+                            break
+                else:
+                    config.log(f"no markers found")
 
-                        #print(navGlobal.markerList)
-                        # stop scan if we have found a requested marker
-                        for markerInfo in result:
-                            if markerInfo['markerId'] in lookForMarkers:
-                                config.log(f"requested marker found, markerId: {markerInfo['markerId']}")
-                                break
-                    else:
-                        config.log(f"no markers found")
+
+            if neckPos['cam'] == inmoovGlobal.HEAD_DEPTH:
+                config.log(f"take depth image: rothead: {requestedHeadYaw}, neck: {neckPos['neckAngle']}")
+                inmoovDepthImg = rpcSend.getImage(inmoovGlobal.HEAD_DEPTH)
+
+                if inmoovDepthImg is None:
+                    config.log(f"WARNING: could not acquire a depth image, stop current task")
+                    return False
+                else:
+                    config.log(f"TODO: do something with the depth image")
 
             neckDegreesList.reverse()       # continue with same neck position as in last rothead position
-            #cv2.imshow("inmoovEyeCamImg", inmoovEyecamImg)
-            #cv2.waitKey()
 
-    config.log(f"scan with head done, degrees: {config.oCart.getDegrees()}")
+    config.log(f"scan with head done, degrees: {config.oCart.getCartYaw()}")
     return True
 
 

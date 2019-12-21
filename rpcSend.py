@@ -1,12 +1,54 @@
 
 import time
 import rpyc
+import functools
 
+import inmoovGlobal
 import config
 import guiUpdate
 import navManager
 import winsound
 
+
+
+def handleCartException(function):
+    """
+    A decorator that wraps the passed in function and logs
+    exceptions should one occur
+    """
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        if connected('cartControl'):
+            try:
+                return function(*args, **kwargs)
+            except Exception as e:
+                config.log(f"connection issue with cartControl, {e}")
+                config.servers['cartControl'].conn = None
+                # re-raise the exception
+                # raise
+        else:
+            config.log(f"no connection with cartControl")
+
+    return wrapper
+
+
+def handleRobotException(function):
+    """
+    A decorator that wraps the passed in function and logs
+    exceptions should one occur
+    """
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        if connected('robotControl'):
+            try:
+                return function(*args, **kwargs)
+            except Exception as e:
+                config.log(f"connection issue with robotControl, {e}")
+                config.servers['robotControl'].conn = None
+        else:
+            config.log(f"no connection with robotControl")
+
+    return wrapper
 
 
 def simulated(server):
@@ -17,19 +59,15 @@ def simulated(server):
 
 
 def connected(server):
-    if config.servers[server].conn is None:
-        config.log(f"no {server} connection established")
+    if config.servers[server].conn is None or config.servers[server].simulated:
+        #config.log(f"no {server} connection established")
         return False
     return True
 
 
-def setSimulationMask(kinect, aruco, cartControl, servoControl):
-
-    config.servers['kinect'].simulated = kinect
-    config.servers['aruco'].simulated = aruco
+def setSimulationMask(cartControl, robotControl):
     config.servers['cartControl'].simulated = cartControl
-    config.servers['servoControl'].simulated = servoControl
-
+    config.servers['robotControl'].simulated = robotControl
 
 
 def terminateSlaveServer(server):
@@ -55,7 +93,7 @@ def neededServersRunning(serversNeeded):
     return True
 
 
-def queryCartInfo():
+def queryCartInfo_ori():
     """
     query cart task for current values
     cartDegrees, cartLocationX, cartLocationY, cartMoving, cartRotating
@@ -63,19 +101,32 @@ def queryCartInfo():
     if connected('cartControl'):
         #cartDegrees, cartLocationX, cartLocationY, cartMoving, cartRotating = config.servers['cartControl'].conn.root.exposed_getCartInfo()
         x,y,o,config.oCart.moving,config.oCart.rotating = config.servers['cartControl'].conn.root.exposed_getCartInfo()
-        config.oCart.setX(x)
-        config.oCart.setY(y)
-        config.oCart.setDegrees(o)
+        config.oCart.setCartX(x)
+        config.oCart.setCartY(y)
+        config.oCart.setCartYaw(o)
         guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CART_INFO})
-        config.log(f"new CartInfo: x: {config.oCart.getX()}, y: {config.oCart.getY()}, degrees: {config.oCart.getDegrees()}, moving: {config.oCart.moving}, rotating: {config.oCart.rotating}")
+        config.log(f"new CartInfo: x: {config.oCart.getCartX()}, y: {config.oCart.getCartY()}, degrees: {config.oCart.getCartYaw()}, moving: {config.oCart.moving}, rotating: {config.oCart.rotating}")
     else:
         config.log(f"no connection with cartControl")
 
+@handleCartException
+def queryCartInfo():
+    x,y,o,config.oCart.moving,config.oCart.rotating = config.servers['cartControl'].conn.root.exposed_getCartInfo()
+    config.oCart.setCartX(x)
+    config.oCart.setCartY(y)
+    config.oCart.setCartYaw(o)
+    guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CART_INFO})
+    config.log(f"new CartInfo: x: {config.oCart.getCartX()}, y: {config.oCart.getCartY()}, degrees: {config.oCart.getCartYaw()}, moving: {config.oCart.moving}, rotating: {config.oCart.rotating}")
 
-def queryBatteries():
+def queryBatteries_ori():
     if connected('cartControl'):
 
-        config.batteryStatus = config.servers['cartControl'].conn.root.getBatteryStatus()
+        try:
+            config.batteryStatus = config.servers['cartControl'].conn.root.getBatteryStatus()
+        except Exception as e:
+            config.servers['cartControl'].conn = None
+            config.log(f"connection with cartControl lost, {e}")
+
 
         if config.batteryStatus is not None:
             #config.log(f"received battery info")
@@ -84,38 +135,49 @@ def queryBatteries():
             if config.batteryStatus['percent'] < 20:
                 winsound.PlaySound('sound.wav', winsound.SND_FILENAME)
 
+@handleCartException
+def queryBatteries():
 
-def getEyecamImage():
-    if connected('aruco'):
+    config.batteryStatus = config.servers['cartControl'].conn.root.getBatteryStatus()
+
+    if config.batteryStatus is not None:
+        #config.log(f"received battery info")
+        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.BATTERY_UPDATE})
+
+        if config.batteryStatus['percent'] < 20:
+            winsound.PlaySound('sound.wav', winsound.SND_FILENAME)
+
+
+def getImage(cam):
+    """
+    cam is one of the constants defined in inmoovGlobal
+    """
+    if connected('cartControl'):
+
         try:
-            return rpyc.classic.obtain(config.servers['aruco'].conn.root.getEyecamImage())
+            return rpyc.classic.obtain(config.servers['cartControl'].conn.root.takeImage(cam))
         except Exception as e:
-            config.log(f"could not get eyecam image: {e}")
+            config.log(f"could not acquire image from cam: {cam}: {e}")
             return None
+
     else:
         return None
 
 
-def getCartcamImage():
-    if connected('aruco'):
-        try:
-            return rpyc.classic.obtain(config.servers['aruco'].conn.root.getCartcamImage())
-        except Exception as e:
-            config.log(f"could not get cartcam image: {e}")
-            return None
-    else:
-        return None
+def requestHeadOrientation():
 
+    if connected('cartControl'):
 
-def getDepth(degrees):
-    if connected('kinect'):
         try:
-            return rpyc.classic.obtain(config.servers['kinect'].conn.root.exposed_getDepth(degrees))
+            #config.oHead.setHeadOrientation(config.servers['cartControl'].conn.root.requestHeadOrientation())
+            orientation = config.servers['cartControl'].conn.root.requestHeadOrientation()
+            config.oHead.setHeadOrientation(orientation)
+            #config.log(f"headOrientation, yaw: {config.oHead.yaw}, roll: {config.oHead.roll}, pitch: {config.oHead.pitch}")
+            return orientation
 
         except Exception as e:
-            config.log(f"could not get depth image: {e}")
+            config.log(f"could not request head orientation from cart: {e}")
             return None
-
     else:
         return None
 
@@ -123,19 +185,22 @@ def getDepth(degrees):
 def checkForObstacle():
 
     try:
-        config.servers['kinect'].conn.root.exposed_startMonitoring()
+        obstacleDist = config.servers['cartControl'].conn.root.exposed_getObstacleDistances()
     except Exception as e:
-        config.log(f"could not request monitoring {e}")
+        config.log(f"could not get obstacle distances {e}")
+        obstacleDist = None
 
-    # obstacles should get published
-    time.sleep(5)
+    return obstacleDist
+
+"""
+def stopCheckingForObstacle():
 
     try:
         config.servers['kinect'].conn.root.exposed_stopMonitoring()
 
     except Exception as e:
-        config.log(f"could not request monitoring {e}")
-
+        config.log(f"could not request stopping obstacle monitoring with depth cam {e}")
+"""
 
 def requestRotation(direction, speed, relativeAngle):
 
@@ -147,105 +212,99 @@ def requestRotation(direction, speed, relativeAngle):
         config.servers['cartControl'].conn.root.exposed_rotateRelative(-relativeAngle, speed)
 
 
-def requestMove(direction, speed, distanceMm):
+def requestMove(direction, speed, distanceMm, distanceMonitoring):
+
+    if connected('cartControl'):
+        if distanceMonitoring:
+            config.servers['cartControl'].conn.root.exposed_startMonitoring()
+        else:
+            config.servers['cartControl'].conn.root.exposed_stopMonitoring()
 
     if connected('cartControl'):
         config.oCart.moving = True
         config.servers['cartControl'].conn.root.exposed_move(direction.value, int(speed), int(distanceMm))
 
 
-def adjustCartPosition(x, y, o):
+def adjustCartPosition(x, y, degrees):
 
     # navManager local cart position correction (not sent to the cart yet)
     config.oCart.xCorr += x
     config.oCart.yCorr += y
-    config.oCart.oCorr += o
+    config.oCart.degreesCorr += degrees
 
     if connected('cartControl'):
-        config.servers['cartControl'].conn.root.exposed_adjustCartPosition(config.oCart.xCorr, config.oCart.yCorr, config.oCart.oCorr)
+        config.servers['cartControl'].conn.root.exposed_adjustCartPosition(config.oCart.xCorr, config.oCart.yCorr, config.oCart.degreesCorr)
         config.oCart.xCorr = 0
         config.oCart.yCorr = 0
-        config.oCart.oCorr = 0
-
-
-def lookForMarkers(camera, markerIdList):
-    """
-    returns a list of dict with attribs:
-    {'markerId', 'distanceCamToMarker', 'angleToMarker', 'markerDegrees'}
-    :param camera: EYE_CAM or CART_CAM
-    :param markerIdList: list of markerId's to look for, may be empty to return all markers found
-    :return:
-    """
-    if connected('aruco'):
-        try:
-            result = rpyc.classic.obtain(config.servers['aruco'].conn.root.exposed_findMarkers(camera, markerIdList, config.oCart.getDegrees()))
-        except Exception as e:
-            config.log(f"could not request marker evaluation: {e}")
-            return False
-
-        #result = config.servers['aruco'].conn.root.exposed_findMarkers(camera, markerId)
-        return len(result) > 0, result
-    else:
-        return False
+        config.oCart.degreesCorr = 0
 
 
 def servoRequestPos(servoName, position, duration):
-    if connected("servoControl"):
-        config.servers['servoControl'].conn.root.exposed_requestServoPos(servoName, position, duration)
+    if connected("robotControl"):
+        config.servers['robotControl'].conn.root.exposed_requestServoPos(servoName, position, duration)
 
 
 def servoRequestDeg(servoName, degrees, duration):
-    if connected("servoControl"):
-        config.servers['servoControl'].conn.root.exposed_requestServoDegrees(servoName, degrees, duration)
+    if connected("robotControl"):
+        config.servers['robotControl'].conn.root.exposed_requestServoDegrees(servoName, degrees, duration)
 
 
 def servoGetPosition(servoName):
-    if connected("servoControl"):
-        position, degrees, moving = config.servers['servoControl'].conn.root.exposed_getPosition(servoName)
+    if connected("robotControl"):
+        position, degrees, moving = config.servers['robotControl'].conn.root.exposed_getPosition(servoName)
         return position, degrees, moving
 
 
 def servoSetAutoDetach(servoName, duration):
-    if connected("servoControl"):
-        config.servers['servoControl'].conn.root.exposed_setAutoDetach(servoName, duration)
+    if connected("robotControl"):
+        config.servers['robotControl'].conn.root.exposed_setAutoDetach(servoName, duration)
 
 
 def servoRest(servoName):
-    if connected("servoControl"):
-        config.servers['servoControl'].conn.root.exposed_moveToRestDegrees(servoName)
+    if connected("robotControl"):
+        config.servers['robotControl'].conn.root.exposed_moveToRestDegrees(servoName)
 
 
 def servoRestAll():
-    if connected("servoControl"):
-        config.servers['servoControl'].conn.root.exposed_requestRestAll()
+    if connected("robotControl"):
+        config.servers['robotControl'].conn.root.exposed_requestRestAll()
 
 
 def servoStop(servoName):
-    if connected("servoControl"):
-        config.servers['servoControl'].conn.root.exposed_requestServoStop(servoName)
+    if connected("robotControl"):
+        config.servers['robotControl'].conn.root.exposed_requestServoStop(servoName)
 
 
 def servoStopAll():
-    if connected("servoControl"):
-        config.servers['servoControl'].conn.root.exposed_requestAllServosStop()
+    if connected("robotControl"):
+        config.servers['robotControl'].conn.root.exposed_requestAllServosStop()
 
 
 def requestMovePose():
-    if connected("servoControl"):
-        config.servers['servoControl'].conn.root.exposed_requestMovePose()
+    if connected("robotControl"):
+        config.servers['robotControl'].conn.root.exposed_requestMovePose()
 
 
+@handleRobotException
 def pinHigh(pinList):
-    if connected("servoControl"):
-        config.log(f"request pin high: {pinList}")
-        config.servers['servoControl'].conn.root.exposed_pinHigh(pinList)
+    config.log(f"request pin high: {pinList}")
+    config.servers['robotControl'].conn.root.exposed_pinHigh(pinList)
 
+
+@handleRobotException
 def pinLow(pinList):
-    if connected("servoControl"):
-        config.log(f"request pin low: {pinList}")
-        config.servers['servoControl'].conn.root.exposed_pinLow(pinList)
+    config.log(f"request pin low: {pinList}")
+    config.servers['robotControl'].conn.root.exposed_pinLow(pinList)
 
-def powerKinect(newState):
-    if connected("cartControl"):
-        config.log(f"request power kinect: {newState}")
-        config.servers['cartControl'].conn.root.exposed_powerKinect(newState)
+
+@handleCartException
+def publishLifeSignalToCart():
+    config.servers['cartControl'].conn.root.exposed_clientLifeSignal(config.localIp, config.MY_RPC_PORT)
+
+@handleRobotException
+def publishLifeSignalToRobot():
+    config.servers['robotControl'].conn.root.exposed_clientLifeSignal(config.localIp, config.MY_RPC_PORT)
+
+def publishLifeSignal():
+    publishLifeSignalToCart()
+    publishLifeSignalToRobot()

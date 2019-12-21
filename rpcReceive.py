@@ -11,6 +11,8 @@ import cartHandling
 class rpcListener(rpyc.Service):
 
     def on_connect(self, conn):
+        config.log(f"on_connect, conn: {conn}")
+
         clientConn = conn._channel.stream.sock.getpeername()
         config.log(f"navManagerListener on_connect {clientConn}")
 
@@ -38,15 +40,12 @@ class rpcListener(rpyc.Service):
             guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE, 'server': server, 'state': 'connected'})
 
 
-    def exposed_servoControlBasicData(self, jsonMsg):
-        # needs to be called by servo control when ready
+    def exposed_robotControlBasicData(self, jsonMsg):
 
-        config.log(f"getting basic data from servo control")
+        config.log(f"getting basic data from robotControl")
         allServoData = json.loads(jsonMsg)
         config.servoCurrent = allServoData
-        #for d in allServoData:
-        #    config.servoCurrent.update({d['servoName']: d})
-        config.servers["servoControl"].basicDataReceived = True
+        config.servers["robotControl"].basicDataReceived = True
 
 
     def exposed_cartControlBasicData(self, jsonMsg):
@@ -56,9 +55,6 @@ class rpcListener(rpyc.Service):
         #rpcSend.queryCartInfo()
         #rpcSend.queryBatteries()
         config.servers["cartControl"].basicDataReceived = True
-
-        #rpcSend.powerKinect(True)
-        # for unknown reason, this ruins the connection with cartControl ?????
 
 
     def exposed_log(self, msg):
@@ -75,7 +71,9 @@ class rpcListener(rpyc.Service):
 
 
     def exposed_cartDocked(self, newStatus):
+        config.log(f"new docked status: {newStatus}")
         config.oCart.docked = newStatus
+
 
 
     def exposed_cartProgress(self,
@@ -97,7 +95,6 @@ class rpcListener(rpyc.Service):
         cartHandling.updateCartInfo(cartX, cartY, degrees, cartMoving, cartRotating)
 
 
-
     def exposed_servoUpdate(self, servoName, msg):
 
         #config.log(f"received a servoUpdate: {msg}")
@@ -114,6 +111,5 @@ class rpcListener(rpyc.Service):
         angle = data.split(',')[1]
 
         config.log(f"obstacleUpdate, distance: {distance}, angle: {angle}")
-
 
 

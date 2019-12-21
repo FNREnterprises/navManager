@@ -28,7 +28,7 @@ def servoMoveToPositionBlocking(servoName, position, duration=1000):
     while True:
         # check local position as we get servo updates automatically
         time.sleep(0.1)
-        _, currPosition, _ = config.servers['servoControl'].conn.root.exposed_getPosition(servoName)
+        _, currPosition, _ = config.servers['robotControl'].conn.root.exposed_getPosition(servoName)
         if time.time() > timeout:
             config.log(f"servoMoveToPositionBlocking timeout, requestedPosition: {position}, current position: {currPosition}")
             return
@@ -85,11 +85,11 @@ def servoStopAll():
     rpcSend.servoStopAll()
 
 
-def servoControl(servo, method, value=90, duration=1000):
+def robotControl(servo, method, value=90, duration=1000):
     """
     use rpyc commands to communicate with inmoovControl
     """
-    if config.servers['servoControl'].simulated:
+    if config.servers['robotControl'].simulated:
         pass
     else:
         if servo[:4] == 'i01.':
@@ -130,7 +130,7 @@ def servoControl(servo, method, value=90, duration=1000):
             servoRest(servo)
 
         else:
-            config.log(f"servoControl, unhandled method '{method}'")
+            config.log(f"robotControl, unhandled method '{method}'")
 
     #navGlobal.log(f"sendMrlCommand, {url}, duration: {time.time()-start:.2f}")
 

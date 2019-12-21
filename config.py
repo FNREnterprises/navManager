@@ -9,12 +9,16 @@ from enum import Enum
 from collections import deque
 
 
+
 # involved computers
-marvin = "192.168.0.17"
-pcjm = "192.168.0.14"
+pcRemote = "inmoov"
+pcLocal = "pcjm"
 
 # rpc
-MY_IP = pcjm
+localName = None
+localIp = None
+remoteIp = None
+
 MY_RPC_PORT = 20010
 
 # NOTE master for ip and ports is the taskOrchestrator
@@ -22,20 +26,24 @@ MY_RPC_PORT = 20010
 taskOrchestrator = None
 
 
-# navMap
-addPartialMap = False
-addPartialMapDone = True
+cams = {}       # dict of dict of cam properties received from cartControl
 
-# use navMap thread to take a cart pic
-takeCartcamImage = False
-takeCartcamImageDone = False
-takeCartcamImageSuccessful = False
+eyecamImage = None
+cartcamImage = None
+depthcamImage = None
+headcamImage = None
 
-# use navMap thread to take a depth pic
-takeDepthImage = False
-takeDepthImageDone = False
-takeDepthImageSuccessful = False
+# use threadProcessImages to look for markers or add depth information to map
+flagProcessCartcamImage = False
+flagProcessEyecamImage = False
+flagProcessHeadcamImage = False
+flagProcessDepthcamImage = False
 
+# temporary values for addPartialMap as it runs in separate thread
+depthCamDistances = None
+depthCamDegrees = 0
+depthCamX = None
+depthCamY = None
 
 floorPlan = None
 floorPlanFat = None
@@ -62,7 +70,7 @@ servoCurrent = {}
 
 DOCKING_MARKER_ID = 10
 DOCKING_DETAIL_ID = 11
-KINECT_X_RANGE = 60        # degrees of view with Kinect 1, we need 6 cart rotations for full circle
+
 
 # list of possible tasks
 tasks = ["restartServers",
@@ -70,8 +78,9 @@ tasks = ["restartServers",
          "fullScanAtPosition",
          "rover",
          "checkForPerson",
-         "takeCartcamImage",
+         "flagTakeCartcamImage",
          "takeEyecamImage",
+         "takeHeadcamImage",
          "getDepthImage",
          "dock",
          "moveCart",
@@ -79,17 +88,14 @@ tasks = ["restartServers",
          "restPosition",
          "cartMovePose",
          "queryCartInfo",
-         "activateKinectPower",
-         "rotateCartAbsolute",
+         "requestD415Depth",
+         "requestHeadOrientation",
          "exit"]
 
 
 taskStack = []
 task = None
 prevTask = None
-
-target = {'x': 0, 'y': 0, 'degrees': 0, 'show': False}
-oTarget = None
 
 leftArm = {'omoplate': 0, 'shoulder': 0, 'rotate': 0, 'bicep': 0}
 oLeftArm = None
@@ -132,7 +138,6 @@ _eyecamImgReceived = False
 batteryStatus = None
 
 mapCenterColor = (255,255,255)
-cartColor = (255,255,0)     # cyan
 markerColor = (255,255,0)   # yellow
 targetColor = (0,255,0)     # green
 scanLocationColor = (128,255,128)   # light green
@@ -155,37 +160,92 @@ class Direction(Enum):
 
 
 class cCart:
-    _x = 0
-    _y = 0
-    _o = 0
+    cartX = 0
+    cartY = 0
+    cartYaw = 0
     xCorr = 0
     yCorr = 0
-    oCorr = 0
+    platformImuYawCorrection = 0
     moving = False
     rotating = False
     blocked = False
     docked = False
+    mapColor = (128,255,128)     # light green
     updateTime = time.time()
 
-    def setX(self, x):
-        self._x = int(x)
+    def setCartX(self, x):
+        self.cartX = int(x)
 
-    def getX(self):
-        return round(self._x + self.xCorr)
+    def setCartY(self, y):
+        self.cartY = int(y)
+
+    def setCartYaw(self, degrees):
+        self.cartYaw = int(degrees)
+
+    def getCartX(self):
+        return int(round(self.cartX + self.xCorr))
+
+    def getCartY(self):
+        return int(round(self.cartY + self.yCorr))
+
+    def getCartYaw(self):
+        return int(round(self.cartYaw + self.platformImuYawCorrection))
+
+oCart = cCart()     # only 1 cart object
+
+
+class cHead:
+    isHeadImuCalibrated = False     # needs cart and servo connection
+    isHeadImuCalibrationInitialized = False     # needs cart and servo connection
+    headImuYawCorrection = 0
+    headYaw = 0
+    headRoll = 0
+    headPitch = 0
+
+    def startHeadImuCalibration(self):
+        self.isHeadImuCalibrationInitialized = True
+
+    def applyHeadImuYawCalibration(self, offset):
+        self.headImuYawCorrection = -offset
+        self.isHeadImuCalibrated = True
+        self.isHeadImuCalibrationInitialized = False
+
+    def setHeadOrientation(self, values):
+        thisYaw = (values[0] + self.headImuYawCorrection + oCart.getCartYaw()) % 360
+        if thisYaw < 180:
+            self.headYaw = thisYaw
+        else:
+            self.headYaw = thisYaw - 360
+        self.headRoll = values[1]
+        self.headPitch = values[2]
+
+    def getHeadYaw(self): return self.headYaw
+    def getHeadRoll(self): return self.headRoll
+    def getHeadPitch(self): return self.headPitch
+
+oHead = cHead()     # only 1 instance
+
+
+class cTarget:
+    _x : int = 0
+    _y : int = 0
+    mapColor = (0,255,255)     # yellow
+
+    def setX(self, x):
+        self._x = int(round(x))
 
     def setY(self, y):
-        self._y = int(y)
+        self._y = int(round(y))
+
+    def getX(self):
+        return self._x
 
     def getY(self):
-        return round(self._y + self.yCorr)
+        return self._y
 
-    def setDegrees(self, o):
-        self._o = int(o)
 
-    def getDegrees(self):
-        return round(self._o + self.oCorr)
+oTarget = cTarget()     # only 1 target object
 
-oCart = cCart()
 
 # a sequence of cart moves that can be interrupted and continued
 oMoveSteps = None
@@ -234,6 +294,7 @@ class CartError(Exception):
     def __str__(self):
         return(repr(self.value))
 
+
 class ArucoError(Exception):
     """
     usage:
@@ -273,116 +334,42 @@ class cServer:
         ip: str
         port: int
         conn: None
-        lifeSignalRequest: time
         lifeSignalReceived: time
         connectionState: str
         basicDataReceived: bool
 
-# Kinect must be started first, otherwise driver complains
-servers = {'kinect': cServer(
+
+servers = {'robotControl': cServer(
                 simulated = False,
                 startupTime = 10,
                 startRequested = None,
-                ip =  marvin,
-                port = 20003,
-                conn =  None,
-                lifeSignalRequest = time.time(),
-                lifeSignalReceived = time.time()+1,
-                connectionState = 'unknown',
-                basicDataReceived = False
-                ),
-           'aruco':  cServer(
-                simulated = False,
-                startupTime = 10,
-                startRequested = None,
-                ip =  marvin,
-                port = 20002,
-                conn =  None,
-                lifeSignalRequest = time.time(),
-                lifeSignalReceived = time.time()+1,
-                connectionState = 'unknown',
-                basicDataReceived = False
-           ),
-           'servoControl': cServer(
-                simulated = False,
-                startupTime = 10,
-                startRequested = None,
-                ip =  marvin,
+                ip =  pcRemote,
                 port = 20004,
                 conn =  None,
-                lifeSignalRequest = time.time(),
-                lifeSignalReceived = time.time()+1,
+                lifeSignalReceived = None,
                 connectionState = 'unknown',
                 basicDataReceived = False
-),
+            ),
            'cartControl': cServer(
                 simulated = False,
                 startupTime = 10,
                 startRequested = None,
-                ip =  marvin,
+                ip =  pcRemote,
                 port = 20001,
                 conn =  None,
-                lifeSignalRequest = time.time(),
-                lifeSignalReceived = time.time()+1,
+                lifeSignalReceived = None,
                 connectionState = 'unknown',
                 basicDataReceived = False
                 )
-           }
+}
 
-def defineServers():
 
-    server = 'kinect'
-    servers[server].simulated = False
-    servers[server].startupTime = 10
-    servers[server].startRequested = None
-    servers[server].ip =  marvin
-    servers[server].port = 20003
-    servers[server].conn =  None
-    servers[server].lifeSignalRequest = time.time()
-    servers[server].lifeSignalReceived = time.time()+1
-    servers[server].connectionState = 'unknown'
-
-    server = 'aruco'
-    servers[server].simulated = False
-    servers[server].startupTime = 10
-    servers[server].startRequested = None
-    servers[server].ip =  marvin
-    servers[server].port = 20002
-    servers[server].conn =  None
-    servers[server].lifeSignalRequest = time.time()
-    servers[server].lifeSignalReceived = time.time()+1
-    servers[server].connectionState = 'unknown'
-
-    server = 'servoControl'
-    servers[server].simulated = False
-    servers[server].startupTime = 10
-    servers[server].startRequested = None
-    servers[server].ip =  marvin
-    servers[server].port = 20004
-    servers[server].conn =  None
-    servers[server].lifeSignalRequest = time.time()
-    servers[server].lifeSignalReceived = time.time()+1
-    servers[server].connectionState = 'unknown'
-    servers[server].basicDataReceived = False
-
-    server = 'cartControl'
-    servers[server].simulated = False
-    servers[server].startupTime = 10
-    servers[server].startRequested = None
-    servers[server].ip =  marvin
-    servers[server].port = 20001
-    servers[server].conn =  None
-    servers[server].lifeSignalRequest = time.time()
-    servers[server].lifeSignalReceived = time.time()+1
-    servers[server].connectionState = 'unknown'
-    servers[server].basicDataReceived = False
-
+# TODO convert to class
 def createObjectViews():
-    global oTarget, oLeftArm, oRightArm, oHead
-    oTarget = objectview(target)
+    global oLeftArm, oRightArm
     oLeftArm = objectview(leftArm)
     oRightArm = objectview(rightArm)
-    oHead = objectview(head)
+
 
 def log(msg, publish=True):
     msg = f"navManager - " + msg
@@ -414,13 +401,13 @@ def distDegToScanPos(index):
     """
     from the current cart position calc distance and degree to any other scan position
     """
-    dx = scanLocations[index][0] - oCart.getX()
-    dy = scanLocations[index][1] - oCart.getY()
+    dx = scanLocations[index][0] - oCart.getCartX()
+    dy = scanLocations[index][1] - oCart.getCartY()
     directionDegrees = np.degrees(np.arctan2(dx, dy))
     distance = np.hypot(dx, dy)
     return (directionDegrees, distance)
 
-
+'''
 def nextCartcamImgId():
 
     global _cartcamImgId
@@ -441,7 +428,7 @@ def nextDepthImgId():
 
     _depthImgId += 1
     return _depthImgId
-
+'''
 
 def allowCartRotation(newStatus):
 
@@ -462,18 +449,7 @@ def signedAngleDifference(start, end):
     d = abs(diff) % 360
     value = 360 - d if d > 180 else d
     sign = 1 if (0 <= diff <= 180) or (-180 >= diff >= -360) else -1
-    return sign * value
-
-
-#def setCartDocked(newStatus):
-
-#    global _cartDocked
-
-#    _cartDocked = newStatus
-
-
-#def isCartDocked():
-#    return _cartDocked
+    return int(round(sign * value))
 
 
 

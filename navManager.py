@@ -7,8 +7,10 @@ import time
 import logging
 import rpyc
 import threading
+import socket
 from PyQt5 import QtWidgets
 
+import inmoovGlobal
 import config
 
 import rpcReceive
@@ -17,12 +19,13 @@ import navTasks
 import navMap
 import guiLogic
 import guiUpdate
-import watchDog
+import threadWatchConnections
+import threadProcessImages
 
 #taskOrchestrator = None
 def setTask(newTask):
 
-    # we can have a stack of started tasks and can return to the last requested task
+    # we can have a stack of started tasks and can return to the previous task
     if newTask == "pop":
 
         #log(f"taskStack before pop: {taskStack}")
@@ -55,7 +58,7 @@ def setTask(newTask):
 
 def setup():
 
-    config.defineServers()
+    #config.defineServers()
 
     config.createObjectViews()
 
@@ -63,8 +66,7 @@ def setup():
     setTask("notask")
 
     # optional: set simulation status of subtasks
-    rpcSend.setSimulationMask(kinect=False, aruco=False, cartControl=False, servoControl=False)
-    #rpcSend.setSimulationMask(kinect=True, aruco=True, cartControl=False, servoControl=True)
+    rpcSend.setSimulationMask(cartControl=False, robotControl=False)
 
     # wait for log listener to start up
     time.sleep(1)
@@ -72,13 +74,12 @@ def setup():
     useTaskOrchestrator = True
     if useTaskOrchestrator:
 
-
         # check for running task orchestrator on subsystem
-        config.log(f"trying to contact taskOrchestrator on subsystem {config.marvin}:20000")
+        config.log(f"trying to contact taskOrchestrator on pc: {config.pcRemote}, ip: {config.remoteIp}:20000")
 
         try:
             guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE, 'server': 'taskOrchestrator', 'state': 'try'})
-            config.taskOrchestrator = rpyc.connect(config.marvin, 20000, service = rpcReceive.rpcListener)
+            config.taskOrchestrator = rpyc.connect(config.remoteIp, 20000, service = rpcReceive.rpcListener)
         except Exception as e1:
             config.log(f"could not connect with taskOrchestrator, {e1}")
             os._exit(1)
@@ -86,27 +87,29 @@ def setup():
         config.log(f"connect with taskOrchestrator successful, try to getLifeSignal")
         good = False
         try:
-            good = config.taskOrchestrator.root.exposed_getLifeSignal(config.MY_IP, config.MY_RPC_PORT)
+            good = config.taskOrchestrator.root.exposed_getLifeSignal(config.localIp, config.MY_RPC_PORT)
         except Exception as e0:
             try:
                 config.taskOrchestrator.close()
             except Exception as e1:
                 config.log(f"exception on close connection with taskOrchestrator {e1}")
 
-            config.log(f"failed to get response, taskOrchestrator on {config.marvin} not running?")
+            config.log(f"failed to get response, taskOrchestrator on {config.remoteIp} not running?")
             os._exit(2)
 
         if good:
             config.log(f"life signal from task orchestrator received")
             guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE, 'server': 'taskOrchestrator', 'state': 'ready'})
         else:
-            config.log(f"could not get life signal from task orchestrator on subsystem {config.marvin}")
+            config.log(f"could not get life signal from task orchestrator on subsystem {config.remoteIp}")
             os._exit(3)
 
         for server in config.servers:
-            if not config.servers[server].simulated:
+            if config.servers[server].simulated:
+                config.log(f"server {server} set to simulated")
+            else:
                 config.log(f"start server thread for {server}")
-                serverThread = threading.Thread(target=watchDog.watchConnection, args={server})
+                serverThread = threading.Thread(target=threadWatchConnections.watchConnection, args={server})
                 serverThread.setName(server)
                 serverThread.start()
 
@@ -156,6 +159,16 @@ def startQtGui():
 
 if __name__ == "__main__":
 
+    config.localName = socket.gethostname()
+    config.localIp = socket.gethostbyname(config.localName)
+
+    try:
+        config.remoteIp = socket.gethostbyname(config.pcRemote)
+    except Exception as e:
+        print(f"remote pc '{config.pcRemote}' not available")
+        sys.exit()
+
+
     windowName = "pcjm//navManager"
     os.system("title " + windowName)
     #hwnd = win32gui.FindWindow(None, windowName)
@@ -187,6 +200,7 @@ if __name__ == "__main__":
         format='%(asctime)s - %(message)s',
         filemode="w")
 
+
     config.log("navManager started")
     # start the navigation thread (setup and loop)
     navThread = threading.Thread(target=setup, args={})
@@ -194,8 +208,8 @@ if __name__ == "__main__":
     navThread.start()
 
     # start map update thread navMap.updateFloorPlan
-    mapThread = threading.Thread(target=navMap.updateFloorPlanThread, args={})
-    mapThread.setName('mapThread')
+    mapThread = threading.Thread(target=threadProcessImages.loop, args={})
+    mapThread.setName('threadProcessImages')
     mapThread.start()
 
     # startQtGui()
