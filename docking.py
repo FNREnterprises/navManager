@@ -59,13 +59,13 @@ def moveToDockingStartPosition(dockMarker):
 
     try:
         config.log(f"docking.moveToDockingStartPosition")
-        config.log(f"docking marker, X: {dockMarker.markerX}, Y: {dockMarker.markerY}, markerDegrees: {dockMarker.markerDegrees}")
+        config.log(f"docking marker, X: {dockMarker.markerX}, Y: {dockMarker.markerY}, markerYaw: {dockMarker.markerYaw}")
         config.log(f"requested orthogonal distance from docking marker: {DOCKING_START_DISTANCE_FROM_MARKER}")
 
         # try to move cart to a position orthogonal in front of the dockingMarker
         # orthogonal position is <distanceCartToTarget> away from marker
-        xCorr = DOCKING_START_DISTANCE_FROM_MARKER * np.cos(np.radians(dockMarker.markerDegrees + 90))
-        yCorr = DOCKING_START_DISTANCE_FROM_MARKER * np.sin(np.radians(dockMarker.markerDegrees + 90))
+        xCorr = DOCKING_START_DISTANCE_FROM_MARKER * np.cos(np.radians(dockMarker.markerYaw + 90))
+        yCorr = DOCKING_START_DISTANCE_FROM_MARKER * np.sin(np.radians(dockMarker.markerYaw + 90))
         config.oTarget.setCartX(dockMarker.markerX + xCorr)
         config.oTarget.setCartY(dockMarker.markerY + yCorr)
 
@@ -95,7 +95,7 @@ def moveToDockingStartPosition(dockMarker):
         dockMap = cv2.cvtColor(config.floorPlan, cv2.COLOR_GRAY2RGB)
         navMap.addCenter(dockMap)
         navMap.addCart(dockMap, config.oCart.getCartX(), config.oCart.getCartY(), config.oCart.getCartYaw(), config.oCart.mapColor)
-        navMap.addMarker(dockMap, dockMarker.markerX, dockMarker.markerY, dockMarker.markerDegrees)
+        navMap.addMarker(dockMap, dockMarker.markerX, dockMarker.markerY, dockMarker.markerYaw)
         navMap.addCart(dockMap, config.oTarget.getCartX(), config.oTarget.getCartY(), degreesTargetToMarker, config.oTarget.mapColor)
         navMap.addPathToTarget(dockMap)     # line from cartPosition to targetPosition
 
@@ -139,23 +139,23 @@ def moveToDockingStartPosition(dockMarker):
 def alignWithMarker(sideMoveOnly=False):
     """
     a loop of rotation and side moves to position cart directly in front of marker
-    for rotation use a reduced part of the optically evaluated markerDegrees value
+    for rotation use a reduced part of the optically evaluated markerYaw value
     :param sideMoveOnly:
     :return:
     """
 
-    markerDegreesRotationThreshold = 1      # do not rotate if measured degrees is below threshold
-    markerDegrees = markerDegreesRotationThreshold + 1  # make sure to enter alignment loop
+    markerYawRotationThreshold = 1      # do not rotate if measured degrees is below threshold
+    markerYaw = markerYawRotationThreshold + 1  # make sure to enter alignment loop
     sideMoveThreshold = 5              # do not move sideways if measured offset is below threshold
     sideMove = sideMoveThreshold + 1    # make sure to enter alignment loop
 
     # verify that cart is aligned with marker
-    # for docking this means we should align cart front with markerDegrees
+    # for docking this means we should align cart front with markerYaw
     distance = None
-    while abs(markerDegrees) > markerDegreesRotationThreshold or abs(sideMove) > sideMoveThreshold:
+    while abs(markerYaw) > markerYawRotationThreshold or abs(sideMove) > sideMoveThreshold:
 
         adjustCart = False
-        if not sideMoveOnly and abs(markerDegrees) > markerDegreesRotationThreshold:
+        if not sideMoveOnly and abs(markerYaw) > markerYawRotationThreshold:
 
             navMap.takeCartcamImage(show=True)
             markerFound, markerInfo = aruco.lookForMarkers("CART_CAM", [DOCK_DETAIL_MARKER_ID])
@@ -163,17 +163,17 @@ def alignWithMarker(sideMoveOnly=False):
             if markerFound:
 
                 # partially rotate to compensate for markerkdegrees
-                # 2.4.2019 using calculated markerDegrees caused overshooting or even loss of marker in cam frame
+                # 2.4.2019 using calculated markerYaw caused overshooting or even loss of marker in cam frame
                 # as we looked for DOCK_DETAIL_MARKER only use first result ([0])
-                markerDegrees = markerInfo[0]['markerDegrees'] / 2
+                markerYaw = markerInfo[0]['markerYaw'] / 2
                 distance = markerInfo[0]['distanceCamToMarker']
-                config.log(f"first rotate cart to be orthogonal with marker {markerDegrees}")
-                if abs(markerDegrees) > markerDegreesRotationThreshold:
-                    if cartHandling.createMoveSequence(config.oCart.getCartYaw() - markerDegrees, 0, 180,
+                config.log(f"first rotate cart to be orthogonal with marker {markerYaw}")
+                if abs(markerYaw) > markerYawRotationThreshold:
+                    if cartHandling.createMoveSequence(config.oCart.getCartYaw() - markerYaw, 0, 180,
                                                        DOCKING_ROTATION_THRESHOLD, DOCKING_MOVE_THRESHOLD):
                         adjustCart = True
                         moveSuccess = cartHandling.moveCart()
-                    #cartHandling.rotateCartRelative(markerDegrees)
+                    #cartHandling.rotateCartRelative(markerYaw)
 
         if abs(sideMove) > sideMoveThreshold:
 
@@ -183,7 +183,7 @@ def alignWithMarker(sideMoveOnly=False):
             if markerFound:
 
                 # as we looked for DOCK_DETAIL_MARKER only use first result ([0])
-                angle = markerInfo[0]['angleToMarker']
+                angle = markerInfo[0]['angleInImage']
                 distance = markerInfo[0]['distanceCamToMarker']
                 sideMove = distance * np.sin(np.radians(angle))
                 config.log(f"move sideways to be directly in front of marker, angle: {angle}, distance: {distance}, sideMove: {sideMove:.0f}")
@@ -296,14 +296,14 @@ def calculateCartMovesForDockingPhase1(corners):
     # eval the marker's yaw (the yaw of the marker itself evaluated from the marker corners)
     rmat = cv2.Rodrigues(vec[0])[0]
     yrp = rotationMatrixToEulerAngles(rmat)
-    markerDegrees = -np.degrees(yrp[0])  # ATTENTION, this is the yaw of the marker evaluated from the image
+    markerYaw = -np.degrees(yrp[0])  # ATTENTION, this is the yaw of the marker evaluated from the image
 
-    # orthoAngle = markerAngleInImage + markerDegrees
-    orthoAngle = markerDegrees
+    # orthoAngle = markerAngleInImage + markerYaw
+    orthoAngle = markerYaw
     xCorr = (marker.orthoStopDist) * np.sin(np.radians(orthoAngle))
     yCorr = (marker.orthoStopDist) * np.cos(np.radians(orthoAngle))
     config.log(
-        f"markerDegrees: {markerDegrees:.1f}, orthoAngle: {orthoAngle:.1f}, xCorr: {xCorr:.0f}, yCorr: {yCorr:.0f}")
+        f"markerYaw: {markerYaw:.1f}, orthoAngle: {orthoAngle:.1f}, xCorr: {xCorr:.0f}, yCorr: {yCorr:.0f}")
 
     # cart target position is marker's orthogonal point at distance
     # use the offset to account for the x-difference of the docking detail marker center vs the docking marker center
@@ -335,12 +335,12 @@ def calculateCartMovesForDockingPhase2(corners):
     # eval the marker's yaw (the yaw of the marker itself evaluated from the marker corners)
     rmat = cv2.Rodrigues(vec[0])[0]
     yrp = rotationMatrixToEulerAngles(rmat)
-    markerDegrees = np.degrees(yrp[0])  # ATTENTION, this is the yaw of the marker evaluated from the image
+    markerYaw = np.degrees(yrp[0])  # ATTENTION, this is the yaw of the marker evaluated from the image
 
     # rotate only if we are not orthogonal to the marker
     rotation = 0
-    if abs(markerDegrees) > 2:
-        rotation = markerDegrees
+    if abs(markerYaw) > 2:
+        rotation = markerYaw
 
     config.log(f"rotation: {rotation:.0f}, xOffsetMarker: {xOffsetMarker:.0f}, distanceCamToMarker: {distanceCamToMarker:.0f}")
 

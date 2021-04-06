@@ -11,7 +11,7 @@ import config
 import gui
 import guiUpdate
 import navMap
-import threadWatchConnections
+#import threadWatchConnections
 import navManager
 
 
@@ -190,7 +190,7 @@ class gui(QtWidgets.QMainWindow, gui.Ui_MainWindow):
             # show markers if requested
             if self.showMarkers.isChecked():
                 for marker in config.markerList:
-                    navMap.addMarker(colImg, marker.markerX, marker.markerY, marker.markerDegrees)
+                    navMap.addMarker(colImg, marker.markerX, marker.markerY, marker.markerYaw)
 
             # limit map to show only drawn objects, no black border
             if config.floorPlan is not None:

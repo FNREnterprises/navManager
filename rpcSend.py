@@ -1,13 +1,13 @@
 
 import time
-import rpyc
+#import rpyc
 import functools
 
 import inmoovGlobal
 import config
 import guiUpdate
 import navManager
-import winsound
+#import winsound
 
 
 

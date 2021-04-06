@@ -10,7 +10,7 @@ import navMap
 import robotHandling
 import navManager
 import docking
-import threadWatchConnections
+#import threadWatchConnections
 
 
 

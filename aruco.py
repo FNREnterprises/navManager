@@ -70,7 +70,7 @@ def lookForMarkers(camera, markerIds, camYaw):
                     config.log(f"error in calculateMarkerFacts: {e}")
                     markerInfo = None
                 if markerInfo is not None:
-                    config.log(f"markerId: {markerInfo['markerId']}, distance: {markerInfo['distanceCamToMarker']}, angleToMarker: {markerInfo['angleToMarker']}, markerDegrees: {markerInfo['markerDegrees']}")
+                    config.log(f"markerId: {markerInfo['markerId']}, distance: {markerInfo['distanceCamToMarker']}, angleInImage: {markerInfo['angleInImage']}, markerYaw: {markerInfo['markerYaw']}")
                     foundMarkers.append(markerInfo)
 
     return foundMarkers
@@ -109,9 +109,9 @@ def rotationMatrixToEulerAngles(R):
 
 
 # calculate a cartYaw for cart to be positioned <distance> in front of the marker
-def evalDegreesDistToCartTarget(degreesToMarker, distance, markerDegrees):
+def evalDegreesDistToCartTarget(degreesToMarker, distance, markerYaw):
     config.log(
-        f"evalDegreesDistToCartDestination degreesToMarker: {degreesToMarker:.0f}, distance: {distance:.0f}, markerDegrees: {markerDegrees:.0f}")
+        f"evalDegreesDistToCartDestination degreesToMarker: {degreesToMarker:.0f}, distance: {distance:.0f}, markerYaw: {markerYaw:.0f}")
 
     # Position x,y of camera
     p1 = point2D(0, 0)
@@ -122,8 +122,8 @@ def evalDegreesDistToCartTarget(degreesToMarker, distance, markerDegrees):
     p2.y = int(distance * np.sin(np.radians(degreesToMarker)))
     # print(p2)
 
-    # angle between marker and cart destination point (includes markerDegrees)
-    beta = degreesToMarker - 90 + markerDegrees
+    # angle between marker and cart destination point (includes markerYaw)
+    beta = degreesToMarker - 90 + markerYaw
 
     # cart destination point orthogonal in front of marker with offset
     p3 = point2D(0, 0)
@@ -227,29 +227,29 @@ def calculateMarkerFacts(corners, markerId, camera):
     distanceCamToMarker = abs(marker[0].length / np.tan(np.radians(heightAngle)))
 
     # use the markers center col to calc the angle to the marker
-    angleToMarker = (imgXCenter - centerCol) * colAngle
-    config.log(f"angleToMarker, centerCol: {centerCol}, offset: {imgXCenter - centerCol}, colAngle: {colAngle}")
+    angleInImage = (imgXCenter - centerCol) * colAngle
+    config.log(f"angleInImage, centerCol: {centerCol}, offset: {imgXCenter - centerCol}, colAngle: {colAngle}")
 
     # eval the marker's yaw from the result of aruco.estimatePoseSingleMarkers
     rmat = cv2.Rodrigues(vec[0])[0]
     yrp = rotationMatrixToEulerAngles(rmat)
 
-    # markerDegrees is 0 for an orthogonal view position,
+    # markerYaw is 0 for an orthogonal view position,
     # negative for a viewpoint right of the marker
     # positive for a viewpoint left of the marker
-    markerDegrees = float(-np.degrees(yrp[0]))  # ATTENTION, this is the yaw of the marker evaluated from the image
+    markerYaw = float(-np.degrees(yrp[0]))  # ATTENTION, this is the yaw of the marker evaluated from the image
 
-    # for distances > 1500 markerDegrees are not accurate, reduce value
+    # for distances > 1500 markerYaw are not accurate, reduce value
     if distanceCamToMarker > 1500:
-        config.log(f"corrected markerDegrees from {markerDegrees} to {markerDegrees/3} because of distance {distanceCamToMarker}")
-        markerDegrees = round(markerDegrees / 3)
+        config.log(f"corrected markerYaw from {markerYaw} to {markerYaw/3} because of distance {distanceCamToMarker}")
+        markerYaw = round(markerYaw / 3)
 
-    config.log(f"markerId: {markerId}, distanceCamToMarker: {distanceCamToMarker:.0f}, angleToMarker: {angleToMarker:.2f}, markerDegrees: {markerDegrees:.2f}")
+    config.log(f"markerId: {markerId}, distanceCamToMarker: {distanceCamToMarker:.0f}, angleInImage: {angleInImage:.2f}, markerYaw: {markerYaw:.2f}")
 
     return {'markerId': markerId,
             'distanceCamToMarker': int(distanceCamToMarker),
-            'angleToMarker': round(angleToMarker),
-            'markerDegrees': round(markerDegrees)}
+            'angleInImage': round(angleInImage),
+            'markerYaw': round(markerYaw)}
 
 
 def loadCalibration():

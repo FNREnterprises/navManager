@@ -60,7 +60,7 @@ def addPartialMap():
     config.log(f"addPartialMap, {vector2d}")
 
     # store the distance array for verification, distances are from right to left!
-    filename = f"{config.PATH_ROOM_DATA}/{config.room}/floorPlan/floorPlanParts/planPart{vector2d}.json"
+    filename = f"{config.PATH_ROOM_DATA}/{config.environment}/floorPlan/floorPlanParts/planPart{vector2d}.json"
     with open(filename, 'w') as jsonFile:
         json.dump(np.nan_to_num(navMap.depthCamDistances).tolist(), jsonFile, indent=2)
 
@@ -73,7 +73,7 @@ def addPartialMap():
     createObstacleMap(navMap.depthCamDistances, navMap.depthCamX, navMap.depthCamY, navMap.depthCamDegrees, show=False)
 
     # only for visual control of obstacles
-    cv2.imwrite(f"{config.PATH_ROOM_DATA}/{config.room}/floorPlan/floorPlanParts/planPart{vector2d}.jpg", config.obstacleMap)
+    cv2.imwrite(f"{config.PATH_ROOM_DATA}/{config.environment}/floorPlan/floorPlanParts/planPart{vector2d}.jpg", config.obstacleMap)
 
     # add the partial part to the new scan plan
     cv2.addWeighted(config.fullScanPlan, 1, config.obstacleMap, 1, 0.0, config.fullScanPlan)
@@ -85,8 +85,8 @@ def addPartialMap():
         cv2.addWeighted(config.floorPlanFat, 1, config.obstacleMapFat, 1, 0.0, config.floorPlanFat)
         config.log(f"addPartialMap, obstacleMap added to floorPlan too")
 
-    cv2.imwrite(f"{config.PATH_ROOM_DATA}/{config.room}/floorPlan/floorPlanParts/floorPlan{vector2d}.jpg", config.fullScanPlan)
-    cv2.imwrite(f"{config.PATH_ROOM_DATA}/{config.room}/floorPlan/floorPlanParts/floorPlanFat{vector2d}.jpg", config.fullScanPlanFat)
+    cv2.imwrite(f"{config.PATH_ROOM_DATA}/{config.environment}/floorPlan/floorPlanParts/floorPlan{vector2d}.jpg", config.fullScanPlan)
+    cv2.imwrite(f"{config.PATH_ROOM_DATA}/{config.environment}/floorPlan/floorPlanParts/floorPlanFat{vector2d}.jpg", config.fullScanPlanFat)
 
     config.log(f"addPartialMap done")
     return True
@@ -110,15 +110,16 @@ def loop():
 
             config.log(f"process cartcam image")
 
-            imageName = navMap.buildImageName(config.oCart.getCartX(), config.oCart.getCartY(), config.oCart.getCartYaw())
-            imgPath = f"{config.PATH_ROOM_DATA}/{config.room}/cartcamImages/{imageName}.jpg"
+            cartLocation: mg.Location = config.marvinShares.cartDict.get(mg.SharedDataItems.CART_LOCATION)
+            imageName = navMap.buildImageName(cartLocation.x, cartLocation.y, cartLocation.yaw)
+            imgPath = f"{config.PATH_ROOM_DATA}/{config.environment}/cartcamImages/{imageName}.jpg"
             cv2.imwrite(imgPath, config.cartcamImage)
 
             # try to find markers in cartcam image
-            markersFound = aruco.lookForMarkers("CART_CAM", [], 0)
+            markersFound = aruco.lookForMarkers(mg.CamTypes.CART_CAM, [], 0)
             if markersFound:
                 config.log(f"updateFloorPlan, markers found: {markersFound}")
-                marker.updateMarkerFoundResult(markersFound, 'CART_CAM', config.oCart.getCartX(), config.oCart.getCartY(), config.oCart.getCartYaw(), 0)
+                marker.updateMarkerFoundResult(markersFound, mg.CamTypes.CART_CAM, config.oCart.getCartX(), config.oCart.getCartY(), config.oCart.getCartYaw(), 0)
             config.flagProcessCartcamImage = False
 
 

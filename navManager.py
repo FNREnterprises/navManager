@@ -4,23 +4,23 @@
 import os
 import sys
 import time
-import logging
-import rpyc
 import threading
-import socket
-from PyQt5 import QtWidgets
+import queue
+import subprocess
 
-import inmoovGlobal
+from marvinglobal import marvinglobal as mg
+from marvinglobal import marvinShares
+
 import config
+import environment
 
-import rpcReceive
-import rpcSend
 import navTasks
 import navMap
 import guiLogic
 import guiUpdate
-import threadWatchConnections
+#import threadWatchConnections
 import threadProcessImages
+import fullScanAtPosition
 
 #taskOrchestrator = None
 def setTask(newTask):
@@ -58,67 +58,16 @@ def setTask(newTask):
 
 def setup():
 
-    #config.defineServers()
-
-    config.createObjectViews()
+    # try to make it without this
+    #config.createObjectViews()
 
     # set initial task (or "notask")
     setTask("notask")
 
-    # optional: set simulation status of subtasks
-    rpcSend.setSimulationMask(cartControl=False, robotControl=False)
-
-    # wait for log listener to start up
-    time.sleep(1)
-
-    useTaskOrchestrator = True
-    if useTaskOrchestrator:
-
-        # check for running task orchestrator on subsystem
-        config.log(f"trying to contact taskOrchestrator on pc: {config.pcRemote}, ip: {config.remoteIp}:20000")
-
-        try:
-            guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE, 'server': 'taskOrchestrator', 'state': 'try'})
-            config.taskOrchestrator = rpyc.connect(config.remoteIp, 20000, service = rpcReceive.rpcListener)
-        except Exception as e1:
-            config.log(f"could not connect with taskOrchestrator, {e1}")
-            os._exit(1)
-
-        config.log(f"connect with taskOrchestrator successful, try to getLifeSignal")
-        good = False
-        try:
-            good = config.taskOrchestrator.root.exposed_getLifeSignal(config.localIp, config.MY_RPC_PORT)
-        except Exception as e0:
-            try:
-                config.taskOrchestrator.close()
-            except Exception as e1:
-                config.log(f"exception on close connection with taskOrchestrator {e1}")
-
-            config.log(f"failed to get response, taskOrchestrator on {config.remoteIp} not running?")
-            os._exit(2)
-
-        if good:
-            config.log(f"life signal from task orchestrator received")
-            guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CONNECTION_UPDATE, 'server': 'taskOrchestrator', 'state': 'ready'})
-        else:
-            config.log(f"could not get life signal from task orchestrator on subsystem {config.remoteIp}")
-            os._exit(3)
-
-        for server in config.servers:
-            if config.servers[server].simulated:
-                config.log(f"server {server} set to simulated")
-            else:
-                config.log(f"start server thread for {server}")
-                serverThread = threading.Thread(target=threadWatchConnections.watchConnection, args={server})
-                serverThread.setName(server)
-                serverThread.start()
-
-
-    navMap.loadMapInfo()
     #navMap.loadMarkerList()
 
     # try to load existing floor plan
-    if config.fullScanDone and navMap.loadFloorPlan(config.room):
+    if config.fullScanDone and navMap.loadFloorPlan(config.environment):
         navMap.loadScanLocations()
         navMap.loadMarkerList()
     else:
@@ -147,78 +96,108 @@ def setup():
         time.sleep(0.1)
 
 
-def startQtGui():
-
-    # start gui (this starts also the servo update thread)
-    app = QtWidgets.QApplication(sys.argv)
-    ui = guiLogic.gui(None)
-    ui.show()
-    sys.exit(app.exec_())
 
 
 
 if __name__ == "__main__":
 
-    config.localName = socket.gethostname()
-    config.localIp = socket.gethostbyname(config.localName)
-
-    try:
-        config.remoteIp = socket.gethostbyname(config.pcRemote)
-    except Exception as e:
-        print(f"remote pc '{config.pcRemote}' not available")
-        sys.exit()
-
-
-    windowName = "pcjm//navManager"
-    os.system("title " + windowName)
-    #hwnd = win32gui.FindWindow(None, windowName)
-    #win32gui.MoveWindow(hwnd, 2000,0,1200,1200,True)
 
     ##########################################################
-    # initialization
-    # Logging, renaming old logs for reviewing ...
-    baseName = "log/navManager"
-    oldName = f"{baseName}9.log"
-    if os.path.isfile(oldName):
-        os.remove(oldName)
-    for i in reversed(range(9)):
-        oldName = f"{baseName}{i}.log"
-        newName = f"{baseName}{i+1}.log"
-        if os.path.isfile(oldName):
-            os.rename(oldName, newName)
-    oldName = f"{baseName}.log"
-    newName = f"{baseName}0.log"
-    if os.path.isfile(oldName):
-        try:
-            os.rename(oldName, newName)
-        except Exception as e:
-            config.log(f"can not rename {oldName} to {newName}")
+    # connect with shared data
+    config.marvinShares = marvinShares.MarvinShares()
+    if not config.marvinShares.sharedDataConnect(config.processName):
+        config.log(f"could not connect with marvinData")
+        os._exit(10)
 
-    logging.basicConfig(
-        filename="log/navManager.log",
-        level=logging.INFO,
-        format='%(asctime)s - %(message)s',
-        filemode="w")
+    # add own process to shared process list
+    config.marvinShares.updateProcessDict(config.processName)
+
+    # check for running cart control
+    if "cartControl" not in config.marvinShares.processDict.keys():
+        config.log(f"navManager needs a running cartControl, trying to start it")
+
+        config.marvinShares.startProcess("cartControl")
+
+        timeoutSeconds = 10
+        timeout = time.time() + timeoutSeconds
+        while "cartControl" not in config.marvinShares.processDict.keys() and time.time() < timeout:
+            time.sleep(1)
+
+        if time.time() > timeout:
+            config.log(f"cartControl did not start up within {timeoutSeconds}, going down")
+            os._exit(1)
 
 
-    config.log("navManager started")
+    #config.roomDataLocal = config.marvinShares.environmentDict.get(mg.SharedDataItems.ENVIRONMENT_ROOM)
+    config.cartLocationLocal = config.marvinShares.cartDict.get(mg.SharedDataItems.CART_LOCATION)
+
+    # load last used room information
+    config.environment = environment.Room()
+    config.scanLocations = environment.ScanLocations()
+    config.markerList = environment.MarkerList()
+
+    if not navMap.loadFloorPlan(config.roomDataLocal.roomName):
+        config.log(f"no current room data found, create a new floor plan")
+
+        msg = {'cmd': mg.NavManagerCommands.SCAN_ROOM, 'sender': config.processName}
+        config.marvinShares.navManagerRequestQueue.put(msg)
+
+
     # start the navigation thread (setup and loop)
-    navThread = threading.Thread(target=setup, args={})
-    navThread.setName("navThread")
-    navThread.start()
+    #navThread = threading.Thread(target=setup, args={})
+    #navThread.setName("navThread")
+    #navThread.start()
 
     # start map update thread navMap.updateFloorPlan
     mapThread = threading.Thread(target=threadProcessImages.loop, args={})
     mapThread.setName('threadProcessImages')
     mapThread.start()
 
-    # startQtGui()
-    guiThread = threading.Thread(target=startQtGui, args={})
-    guiThread.setName('guiThread')
-    guiThread.start()
+    config.log(f"{config.processName} ready, waiting for requests")
+    config.log(f"---------------")
+    request = {}
 
-    from rpyc.utils.server import ThreadedServer
-    print(f"start listening on port {config.MY_RPC_PORT}")
-    listener = ThreadedServer(rpcReceive.rpcListener, port=config.MY_RPC_PORT)
-    listener.start()
+    # wait for requests, update process list
+    while True:
+
+        try:
+            config.marvinShares.updateProcessDict(config.processName)
+            request = config.marvinShares.navManagerRequestQueue.get(block=True, timeout=1)
+        except queue.Empty: # in case of empty queue update processDict only
+            continue
+        except TimeoutError: # in case of timeout update processDict only
+            continue
+        except Exception as e:
+            config.log(f"exception in waiting for navManager request, {e=}, going down")
+            config.marvinShares.removeProcess(config.processName)
+            os._exit(11)
+
+        config.log(f"navManagerRequestQueue, request received: {request}")
+
+
+        cmd = request['cmd']
+        if cmd == mg.NavManagerCommands.SCAN_ROOM:
+            navMap.createFloorPlan()
+            msg = {'cmd': mg.NavManagerCommands.FULL_SCAN_AT_POSITION, 'sender': config.processName}
+            config.marvinShares.navManagerRequestQueue.put(msg)
+            #navManager.setTask("fullScanAtPosition")
+
+        elif cmd == mg.NavManagerCommands.FULL_SCAN_AT_POSITION:
+            fullScanAtPosition.fullScanAtPosition([])       # check on all markers
+
+        elif cmd == mg.NavManagerCommands.TAKE_IMAGE_RESULT:
+            if not request['success']:
+                # stop current task
+                config.task = None
+
+        elif cmd == mg.NavManagerCommands.ARUCO_CHECK_RESULT:
+            if not request['success']:
+                # stop current task
+                config.task = None
+
+
+        else:
+           config.log(f"navManager, unknown request received: {request}")
+
+
 

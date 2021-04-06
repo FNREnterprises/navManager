@@ -1,5 +1,6 @@
 
 import time
+import os
 from datetime import datetime as dt
 import inspect
 
@@ -8,30 +9,37 @@ import numpy as np
 from enum import Enum
 from collections import deque
 
+from marvinglobal import marvinglobal as mg
+from marvinglobal import environmentClasses
+from marvinglobal import cartClasses
+from marvinglobal import skeletonCommandMethods
+
+import environment
+
+processName = 'navManager'
+marvinShares = None   # shared data
 
 
-# involved computers
-pcRemote = "inmoov"
-pcLocal = "pcjm"
+# base folder for room information
+PATH_ROOM_DATA = f"{mg.PERSISTED_DATA_FOLDER}/{mg.ROOM_FOLDER}"
 
-# rpc
-localName = None
-localIp = None
-remoteIp = None
+# locally modifiable shared objects
+roomDataLocal = environmentClasses.RoomData()
+cartLocationLocal = mg.Location()
 
-MY_RPC_PORT = 20010
+room = environment.Room()
+fileName = f"{mg.PERSISTED_DATA_FOLDER}/{mg.ROOM_FOLDER}/{roomDataLocal.roomName}/markerList.json"
+scanLocations:environment.ScanLocations = environment.ScanLocations()
+markerList:environmentClasses.MarkerList =  environmentClasses.MarkerList(fileName)
 
-# NOTE master for ip and ports is the taskOrchestrator
-# rpc connection with task orchestrator
-taskOrchestrator = None
+skeletonCommandMethods = skeletonCommandMethods.SkeletonCommandMethods()
 
+#cams = {}       # dict of dict of cam properties received from cartControl
 
-cams = {}       # dict of dict of cam properties received from cartControl
-
-eyecamImage = None
-cartcamImage = None
-depthcamImage = None
-headcamImage = None
+#eyecamImage = None
+#cartcamImage = None
+#depthcamImage = None
+#headcamImage = None
 
 # use threadProcessImages to look for markers or add depth information to map
 flagProcessCartcamImage = False
@@ -60,8 +68,7 @@ mapSettings = {
     'showMarkers':      False,
     'showMovePath':     False }
 
-scanLocations = []
-markerList = []
+
 
 robotMovesQueue = deque(maxlen=100)
 
@@ -107,11 +114,6 @@ head = {}
 oHead =  None
 
 
-# base folder for room information
-PATH_ROOM_DATA = "D:/Projekte/InMoov/navManager/ROOMS"
-room = 'unknown'
-fullScanDone = False
-
 
 # positions where a 360 view has been made and recorded
 _dockingMarkerPosition = None    # position and degrees that showed the docking marker
@@ -138,12 +140,13 @@ _eyecamImgReceived = False
 batteryStatus = None
 
 mapCenterColor = (255,255,255)
-markerColor = (255,255,0)   # yellow
+#markerColor = (255,255,0)   # yellow
 targetColor = (0,255,0)     # green
-scanLocationColor = (128,255,128)   # light green
+##scanLocationColor = (128,255,128)   # light green
 
 # tensorflow nets for people locator, age and gender classification
 netsLoaded = False
+
 
 class Direction(Enum):
     STOP = 0
@@ -266,7 +269,7 @@ class cMarker:
     distanceCamToMarker: int = None
     markerX: int = None
     markerY: int = None
-    markerDegrees: int = None
+    markerYaw: int = None
 
     def props(self):
         pr = {}
@@ -323,45 +326,6 @@ class objectview(object):
     """
     def __init__(self, d):
         self.__dict__ = d
-
-
-@with_slots
-@dataclass
-class cServer:
-        simulated: bool
-        startupTime: int
-        startRequested: None
-        ip: str
-        port: int
-        conn: None
-        lifeSignalReceived: time
-        connectionState: str
-        basicDataReceived: bool
-
-
-servers = {'robotControl': cServer(
-                simulated = False,
-                startupTime = 10,
-                startRequested = None,
-                ip =  pcRemote,
-                port = 20004,
-                conn =  None,
-                lifeSignalReceived = None,
-                connectionState = 'unknown',
-                basicDataReceived = False
-            ),
-           'cartControl': cServer(
-                simulated = False,
-                startupTime = 10,
-                startRequested = None,
-                ip =  pcRemote,
-                port = 20001,
-                conn =  None,
-                lifeSignalReceived = None,
-                connectionState = 'unknown',
-                basicDataReceived = False
-                )
-}
 
 
 # TODO convert to class
