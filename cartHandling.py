@@ -10,22 +10,24 @@ from dataslots import with_slots        # with_slots in combination with datacla
 from dataclasses import dataclass       # dataclass simplifies class definition
 from enum import Enum, unique
 
+from marvinglobal import marvinglobal as mg
+from marvinglobal import marvinShares
+from marvinglobal import cartCommandMethods
+
 import config
-import rpcSend
-import guiUpdate
 
 ROTATION_SPEED = 150
-MOVE_TOLERANCE = 10
-ROTATION_TOLERANCE = 1
-MAX_MOVE_RETRIES = 3
+MOVE_TOLERANCE = 10         # allowed offset between requested and current position in [mm]
+ROTATION_TOLERANCE = 1      # allowed offset between requested and current cart yaw in [deg]
+MAX_MOVE_RETRIES = 3        # if cart sees an obstacle retry to move
 
-ROTATION_THRESHOLD = 2
-MOVE_THRESHOLD = 15
+ROTATION_THRESHOLD = 2      # suppress minimal cart rotation requests [deg]
+MOVE_THRESHOLD = 15         # suppress minimal cart move requests [mm]
 
 directionDegrees = [0,0,-45,45,90,-90,180,-135,135]
 
 @unique
-class cMoveState(Enum):
+class MoveState(Enum):
     """
     list of move states for single move and move sequence
     """
@@ -36,7 +38,7 @@ class cMoveState(Enum):
     MOVE_FAILED = 4
 
 @unique
-class cMoveSequenceState(Enum):
+class MoveSequenceState(Enum):
     """
     list of move states for single move and move sequence
     """
@@ -47,27 +49,27 @@ class cMoveSequenceState(Enum):
 
 @with_slots     # prevents adding attibutes, does not allow for default values
 @dataclass
-class cCartMove:
+class CartMove:
     direction: config.Direction
     speed: int
     requested: int
     remaining: int
     tolerance: int
-    moveStatus: cMoveState
+    moveStatus: MoveState
     numContinues: int
     cartMoveMonitoring: bool
 
 @with_slots     # prevents adding attibutes, does not allow for default values
 @dataclass
-class cCartMoveSequence:
+class CartMoveSequence:
     numMoves: int
     moves: []
-    sequenceStatus: cMoveSequenceState
+    sequenceStatus: MoveSequenceState
     currMove: int
 
 
     def addMove(self, direction, speed, value, tolerance, cartMoveMonitoring=False):
-        oCartMove = cCartMove(direction, speed, int(round(value)), int(round(value)), tolerance, cMoveState.MOVE_PENDING, MAX_MOVE_RETRIES, cartMoveMonitoring)
+        oCartMove = CartMove(direction, speed, int(round(value)), int(round(value)), tolerance, MoveState.MOVE_PENDING, MAX_MOVE_RETRIES, cartMoveMonitoring)
         self.numMoves += 1
         self.moves.append(oCartMove)
         config.log(f"move added to move sequence: {direction}, {value:.0f}")
@@ -81,22 +83,31 @@ class cCartMoveSequence:
 
         if final:
             if abs(thisMove.remaining) < thisMove.tolerance:
-                thisMove.moveStatus = cMoveState.MOVE_FINISHED
+                thisMove.moveStatus = MoveState.MOVE_FINISHED
                 config.log(f"move finished, remaining: {int(thisMove.remaining)}, step: {self.moves[int(self.currMove)]}")
             else:
-                thisMove.moveStatus = cMoveState.MOVE_INTERRUPTED
+                thisMove.moveStatus = MoveState.MOVE_INTERRUPTED
                 config.log(f"move interrupted, remaining: {int(thisMove.remaining)}, step: {self.moves[int(self.currMove)]}")
         else:
-            thisMove.moveStatus = cMoveState.MOVE_IN_PROGRESS
+            thisMove.moveStatus = MoveState.MOVE_IN_PROGRESS
 
 
     def startOrContinueMoveSequence(self):
-        self.sequenceStatus = cMoveSequenceState.MOVESEQUENCE_IN_PROGRESS
+        self.sequenceStatus = MoveSequenceState.MOVESEQUENCE_IN_PROGRESS
         thisMove = self.moves[self.currMove]
         if thisMove.direction in [config.Direction.ROTATE_LEFT, config.Direction.ROTATE_RIGHT]:
-            rpcSend.requestRotation(thisMove.direction, thisMove.speed, thisMove.requested)
+            #rpcSend.requestRotation(thisMove.direction, thisMove.speed, thisMove.requested)
+            if thisMove.direction == config.Direction.ROTATE_RIGHT:
+                angle = thisMove.requested
+            else:
+                angle = -thisMove.requested
+            # def rotate(requestQueue, sender, relAngle: int, speed):
+            config.cartCommandMethods.rotate(config.marvinShares.cartRequestQueue, config.processName, angle, 150)
+
         else:
-            rpcSend.requestMove(thisMove.direction, thisMove.speed, thisMove.requested, thisMove.cartMoveMonitoring)
+            #rpcSend.requestMove(thisMove.direction, thisMove.speed, thisMove.requested, thisMove.cartMoveMonitoring)
+            config.cartCommandMethods.move(config.marvinShares.cartRequestQueue, config.processName,
+                                           mg.MoveDirection.FORWARD, thisMove.speed, thisMove.requested, protected=True)
         config.log(f"send move cart, direction {thisMove.direction}, speed: {thisMove.speed}, requested: {thisMove.requested}")
 
 
@@ -104,7 +115,7 @@ class cCartMoveSequence:
         thisMove = self.moves[self.currMove]
         if thisMove.numContinues > 3:
             config.log(f"no success with {thisMove.numContinues-2} retries, giving up")
-            thisMove.moveStatus = cMoveState.MOVE_FAILED
+            thisMove.moveStatus = MoveState.MOVE_FAILED
             return
         # count number of retries
         thisMove.numContinues += 1
@@ -115,7 +126,7 @@ class cCartMoveSequence:
 
     def nextMove(self):
         if self.currMove == self.numMoves-1:
-            self.sequenceStatus = cMoveSequenceState.MOVESEQUENCE_FINISHED
+            self.sequenceStatus = MoveSequenceState.MOVESEQUENCE_FINISHED
             return
         else:
             self.currMove += 1
@@ -124,7 +135,7 @@ class cCartMoveSequence:
 
 # workaround for frozen class and default values
 def newMoveSequence():
-    return cCartMoveSequence(0, [], sequenceStatus=cMoveSequenceState.MOVESEQUENCE_PENDING, currMove=0)
+    return CartMoveSequence(0, [], sequenceStatus=MoveSequenceState.MOVESEQUENCE_PENDING, currMove=0)
 
 
 def evalBestMoveDirection(angle, allowedMoves):
@@ -198,8 +209,8 @@ def setTargetLocation(distance, relDegrees):
     """
     dx = round(distance * np.cos(np.radians(relDegrees)))
     dy = round(distance * np.sin(np.radians(relDegrees)))
-    config.oTarget.setCartX(config.oCart.getCartX() + dx)
-    config.oTarget.setCartY(config.oCart.getCartY() + dy)
+    config.target.setCartX(config.cart.getCartX() + dx)
+    config.target.setCartY(config.cart.getCartY() + dy)
 
 
 def rotateCartAbsolute(degrees):
@@ -214,14 +225,14 @@ def rotateCartAbsolute(degrees):
 
 def rotateCartRelative(angle):
     config.log(f"rotate cart for {angle}")
-    if createMoveSequence(config.oCart.getCartYaw() + angle, 0, ROTATION_SPEED):
+    if createMoveSequence(config.cart.getCartYaw() + angle, 0, ROTATION_SPEED):
         moveCart()
 
 
 def moveCartWithDirection(moveDirection: config.Direction, distanceMm, speed, rotationThreshold, moveThreshold, cartMoveMonitoring=True):
     config.log(f"move cart with direction: {moveDirection}, dist: {distanceMm}, speed: {speed}, useDepthCam: {cartMoveMonitoring}")
     allowedMoves = [moveDirection]
-    degrees = (config.oCart.getCartYaw() + directionDegrees[moveDirection.value]) % 360
+    degrees = (config.cart.getCartYaw() + directionDegrees[moveDirection.value]) % 360
     if createMoveSequence(degrees, distanceMm, speed, rotationThreshold, moveThreshold, allowedMoves, cartMoveMonitoring):
         moveCart()
 
@@ -240,20 +251,20 @@ def createMoveSequence(degrees, distance, speed, rotationThreshold=ROTATION_THRE
     if allowedMoves is None:    # construct to avoid side effects of mutable default values
         allowedMoves = [config.Direction.FORWARD]
 
-    cartDegrees = config.oCart.getCartYaw()
+    cartDegrees = config.cart.getCartYaw()
     config.log(f"rotate to: {int(degrees)}, distance: {int(distance)}, currDegrees: {cartDegrees}")
 
     angle = config.signedAngleDifference(cartDegrees, degrees)
     moveDirection, rotationForMove, endRotation = evalBestMoveDirection(angle, allowedMoves)
 
     config.log(f"create move sequence")
-    config.oMoveSteps = newMoveSequence()
+    config.moveSteps = newMoveSequence()
 
     if abs(rotationForMove) >= rotationThreshold:
         if rotationForMove > 0:
-            config.oMoveSteps.addMove(config.Direction.ROTATE_LEFT, ROTATION_SPEED, abs(rotationForMove), ROTATION_TOLERANCE)
+            config.moveSteps.addMove(config.Direction.ROTATE_LEFT, ROTATION_SPEED, abs(rotationForMove), ROTATION_TOLERANCE)
         else:
-            config.oMoveSteps.addMove(config.Direction.ROTATE_RIGHT, ROTATION_SPEED, abs(rotationForMove), ROTATION_TOLERANCE)
+            config.moveSteps.addMove(config.Direction.ROTATE_RIGHT, ROTATION_SPEED, abs(rotationForMove), ROTATION_TOLERANCE)
 
     # limit distance to 2.5 m
     if distance > 2500:
@@ -261,21 +272,21 @@ def createMoveSequence(degrees, distance, speed, rotationThreshold=ROTATION_THRE
         distance = 2500
 
     if distance >= moveThreshold:
-        config.oMoveSteps.addMove(moveDirection, speed, distance, MOVE_TOLERANCE, cartMoveMonitoring)
+        config.moveSteps.addMove(moveDirection, speed, distance, MOVE_TOLERANCE, cartMoveMonitoring)
 
         if abs(endRotation) >= rotationThreshold:
             if endRotation > 0:
-                config.oMoveSteps.addMove(config.Direction.ROTATE_LEFT, ROTATION_SPEED, abs(endRotation), ROTATION_TOLERANCE)
+                config.moveSteps.addMove(config.Direction.ROTATE_LEFT, ROTATION_SPEED, abs(endRotation), ROTATION_TOLERANCE)
             else:
-                config.oMoveSteps.addMove(config.Direction.ROTATE_RIGHT, ROTATION_SPEED, abs(endRotation), ROTATION_TOLERANCE)
+                config.moveSteps.addMove(config.Direction.ROTATE_RIGHT, ROTATION_SPEED, abs(endRotation), ROTATION_TOLERANCE)
 
-    return config.oMoveSteps.numMoves > 0
+    return config.moveSteps.numMoves > 0
 
 
 def moveCart():
 
     # start move sequence
-    config.oMoveSteps.startOrContinueMoveSequence()
+    config.moveSteps.startOrContinueMoveSequence()
 
     ############################
     # monitor move sequence
@@ -283,52 +294,52 @@ def moveCart():
     while True:
 
         # check on current move in sequence
-        thisMove = config.oMoveSteps.moves[config.oMoveSteps.currMove]
-        thisSequence = config.oMoveSteps
+        thisMove = config.moveSteps.moves[config.moveSteps.currMove]
+        thisSequence = config.moveSteps
 
-        if thisMove.moveStatus == cMoveState.MOVE_IN_PROGRESS:
+        if thisMove.moveStatus == MoveState.MOVE_IN_PROGRESS:
             time.sleep(0.1)
 
-        if thisMove.moveStatus == cMoveState.MOVE_INTERRUPTED:
+        if thisMove.moveStatus == MoveState.MOVE_INTERRUPTED:
             # if a move did not finish try to continue it
             if thisMove.numContinues < 5:
                 config.log(f"move step interrupted, try to continue")
-                config.oMoveSteps.continueMove()
+                config.moveSteps.continueMove()
             else:
                 # if retries do not help stop the sequence
                 config.log(f"move step {thisMove.direction} FAILED")
-                thisMove.moveStatus = cMoveState.MOVE_INTERRUPTED
-                config.oMoveSteps.sequenceStatus = cMoveSequenceState.MOVESEQUENCE_FAILED
+                thisMove.moveStatus = MoveState.MOVE_INTERRUPTED
+                config.moveSteps.sequenceStatus = MoveSequenceState.MOVESEQUENCE_FAILED
 
-        if thisMove.moveStatus == cMoveState.MOVE_FAILED:
+        if thisMove.moveStatus == MoveState.MOVE_FAILED:
             # if a single move failed stop the sequence
             config.log(f"move step {thisMove.direction} FAILED")
-            config.oMoveSteps.sequenceStatus = cMoveSequenceState.MOVESEQUENCE_FAILED
+            config.moveSteps.sequenceStatus = MoveSequenceState.MOVESEQUENCE_FAILED
 
-        if thisMove.moveStatus == cMoveState.MOVE_FINISHED:
+        if thisMove.moveStatus == MoveState.MOVE_FINISHED:
             # if a single move is donw check for last move in sequence
             if thisSequence.currMove == thisSequence.numMoves-1:
-                thisSequence.sequenceStatus = cMoveSequenceState.MOVESEQUENCE_FINISHED
+                thisSequence.sequenceStatus = MoveSequenceState.MOVESEQUENCE_FINISHED
             else:
                 thisSequence.nextMove()
 
         # check on move sequence
-        if config.oMoveSteps.sequenceStatus == cMoveSequenceState.MOVESEQUENCE_FAILED:
+        if config.moveSteps.sequenceStatus == MoveSequenceState.MOVESEQUENCE_FAILED:
             config.log(f"move sequence failed")
             return False
 
-        if config.oMoveSteps.sequenceStatus == cMoveSequenceState.MOVESEQUENCE_FINISHED:
+        if config.moveSteps.sequenceStatus == MoveSequenceState.MOVESEQUENCE_FINISHED:
             config.log(f"move sequence done")
             return True
 
 
 def updateCartInfo(cartX, cartY, degrees, cartMoving, cartRotating):
-    config.oCart.setCartX(cartX)
-    config.oCart.setCartY(cartY)
-    config.oCart.setCartYaw(degrees)
-    config.oCart.moving = cartMoving
-    config.oCart.rotating = cartRotating
-    config.oCart.update = time.time()
-    config.log(f"updateCartInfo received: {config.oCart.getCartX()}, {config.oCart.getCartY()}, {config.oCart.getCartYaw()},  {config.oCart.moving}, {config.oCart.rotating}", publish=False)
-    guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CART_INFO})
-    guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP})
+    config.cart.setCartX(cartX)
+    config.cart.setCartY(cartY)
+    config.cart.setCartYaw(degrees)
+    config.cart.moving = cartMoving
+    config.cart.rotating = cartRotating
+    config.cart.update = time.time()
+    config.log(f"updateCartInfo received: {config.cart.getCartX()}, {config.cart.getCartY()}, {config.cart.getCartYaw()},  {config.cart.moving}, {config.cart.rotating}", publish=False)
+    config.marvinShares.guiUpdateQueue.append({'type': mg.updType.CART_INFO})
+    config.marvinShares.guiUpdateQueue.append({'type': mg.updType.MAP})

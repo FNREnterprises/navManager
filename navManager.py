@@ -12,19 +12,15 @@ from marvinglobal import marvinglobal as mg
 from marvinglobal import marvinShares
 
 import config
-import environment
 
 import navTasks
 import navMap
-import guiLogic
-import guiUpdate
-#import threadWatchConnections
-import threadProcessImages
 import fullScanAtPosition
 
 #taskOrchestrator = None
-def setTask(newTask):
+def setTask(requestor, newTask):
 
+    config.log(f"new task set by {requestor}: {newTask}")
     # we can have a stack of started tasks and can return to the previous task
     if newTask == "pop":
 
@@ -56,11 +52,9 @@ def setTask(newTask):
         config.log(f"taskStack: {config.taskStack}")
 
 
-def setup():
+def navThread():
 
-    # try to make it without this
-    #config.createObjectViews()
-
+    """
     # set initial task (or "notask")
     setTask("notask")
 
@@ -75,28 +69,14 @@ def setup():
         setTask('noTask')
 
     if config.floorPlan is not None:
-        guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP})
+        config.marvinShares.mapGuiUpdateQueue.put({'type': mg.SharedDataItems.ENVIRONMENT_ROOM})
 
-    guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.CART_INFO})
-
-    # wait for ready messages from servers
-    for _ in range(15):
-        allReady = True
-        for server in config.servers:
-            if not config.servers[server].simulated:
-                if not config.servers[server].connectionState == 'ready':
-                    allReady = False
-
-        if not allReady:
-            time.sleep(1)
-
+    config.marvinShares.mapGuiUpdateQueue.put({'type': mg.SharedDataItems.CART_STATE})
+    """
     # check for assigned task
     while True:
         navTasks.checkForTasks()
         time.sleep(0.1)
-
-
-
 
 
 if __name__ == "__main__":
@@ -112,50 +92,41 @@ if __name__ == "__main__":
     # add own process to shared process list
     config.marvinShares.updateProcessDict(config.processName)
 
-    # check for running cart control
-    if "cartControl" not in config.marvinShares.processDict.keys():
-        config.log(f"navManager needs a running cartControl, trying to start it")
+    config.roomDataLocal = config.getRoomData()
+    config.scanLocationListLocal = config.getScanLocationList()
+    config.markerListLocal = config.getMarkerList()
 
-        config.marvinShares.startProcess("cartControl")
+    # consume "outdated" entries from navManager request queue
+    while True:
+        try:
+            request = config.marvinShares.navManagerRequestQueue.get(block=True, timeout=0.1)
+        except queue.Empty:  # in case of empty queue update processDict only
+            break
+        except TimeoutError:  # in case of timeout update processDict only
+            break
 
-        timeoutSeconds = 10
-        timeout = time.time() + timeoutSeconds
-        while "cartControl" not in config.marvinShares.processDict.keys() and time.time() < timeout:
-            time.sleep(1)
-
-        if time.time() > timeout:
-            config.log(f"cartControl did not start up within {timeoutSeconds}, going down")
-            os._exit(1)
-
-
-    #config.roomDataLocal = config.marvinShares.environmentDict.get(mg.SharedDataItems.ENVIRONMENT_ROOM)
-    config.cartLocationLocal = config.marvinShares.cartDict.get(mg.SharedDataItems.CART_LOCATION)
-
-    # load last used room information
-    config.environment = environment.Room()
-    config.scanLocations = environment.ScanLocations()
-    config.markerList = environment.MarkerList()
 
     if not navMap.loadFloorPlan(config.roomDataLocal.roomName):
         config.log(f"no current room data found, create a new floor plan")
 
-        msg = {'cmd': mg.NavManagerCommands.SCAN_ROOM, 'sender': config.processName}
+        msg = {'msgType': mg.NavManagerCommands.SCAN_ROOM, 'sender': config.processName}
         config.marvinShares.navManagerRequestQueue.put(msg)
 
 
     # start the navigation thread (setup and loop)
-    #navThread = threading.Thread(target=setup, args={})
-    #navThread.setName("navThread")
-    #navThread.start()
+    navThread = threading.Thread(target=navThread, args={})
+    navThread.setName("navThread")
+    navThread.start()
 
     # start map update thread navMap.updateFloorPlan
-    mapThread = threading.Thread(target=threadProcessImages.loop, args={})
-    mapThread.setName('threadProcessImages')
-    mapThread.start()
+    #mapThread = threading.Thread(target=threadProcessImages.loop, args={})
+    #mapThread.setName('threadProcessImages')
+    #mapThread.start()
 
     config.log(f"{config.processName} ready, waiting for requests")
     config.log(f"---------------")
     request = {}
+
 
     # wait for requests, update process list
     while True:
@@ -174,27 +145,28 @@ if __name__ == "__main__":
 
         config.log(f"navManagerRequestQueue, request received: {request}")
 
-
-        cmd = request['cmd']
+        cmd = request['msgType']
         if cmd == mg.NavManagerCommands.SCAN_ROOM:
             navMap.createFloorPlan()
-            msg = {'cmd': mg.NavManagerCommands.FULL_SCAN_AT_POSITION, 'sender': config.processName}
+            msg = {'msgType': mg.NavManagerCommands.FULL_SCAN_AT_POSITION, 'sender': config.processName}
             config.marvinShares.navManagerRequestQueue.put(msg)
             #navManager.setTask("fullScanAtPosition")
 
         elif cmd == mg.NavManagerCommands.FULL_SCAN_AT_POSITION:
-            fullScanAtPosition.fullScanAtPosition([])       # check on all markers
+            setTask(f"cmd by queue","fullScanAtPosition")       # check on all markers
 
         elif cmd == mg.NavManagerCommands.TAKE_IMAGE_RESULT:
-            if not request['success']:
-                # stop current task
-                config.task = None
-
-        elif cmd == mg.NavManagerCommands.ARUCO_CHECK_RESULT:
-            if not request['success']:
-                # stop current task
-                config.task = None
-
+            #config.log(f"handle cmd TAKE_IMAGE_RESULT")
+            if config.camRequest[request['camType']] is None:
+                config.log(f"TAKE_IMAGE_RESULT received without request")
+            else:
+                config.log(f"TAKE_IMAGE_RESULT {request['camType']=}, {request['imageId']=}, {request['success']=}")
+                if request['success']:
+                    #config.log(f"set success in camRequest")
+                    config.camRequest[request['camType']].setSuccess()
+                else:
+                    #config.log(f"set failure in camRequest")
+                    config.camRequest[request['camType']].setFailure()
 
         else:
            config.log(f"navManager, unknown request received: {request}")

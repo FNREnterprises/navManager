@@ -13,8 +13,7 @@ from marvinglobal import marvinglobal as mg
 from marvinglobal import environmentClasses
 from marvinglobal import cartClasses
 from marvinglobal import skeletonCommandMethods
-
-import environment
+from marvinglobal import cartCommandMethods
 
 processName = 'navManager'
 marvinShares = None   # shared data
@@ -25,14 +24,31 @@ PATH_ROOM_DATA = f"{mg.PERSISTED_DATA_FOLDER}/{mg.ROOM_FOLDER}"
 
 # locally modifiable shared objects
 roomDataLocal = environmentClasses.RoomData()
-cartLocationLocal = mg.Location()
+scanLocationListLocal = environmentClasses.ScanLocationList()
+markerListLocal = environmentClasses.MarkerList()
 
-room = environment.Room()
-fileName = f"{mg.PERSISTED_DATA_FOLDER}/{mg.ROOM_FOLDER}/{roomDataLocal.roomName}/markerList.json"
-scanLocations:environment.ScanLocations = environment.ScanLocations()
-markerList:environmentClasses.MarkerList =  environmentClasses.MarkerList(fileName)
 
 skeletonCommandMethods = skeletonCommandMethods.SkeletonCommandMethods()
+cartCommandMethods = cartCommandMethods.CartCommandMethods()
+
+camRequest = {mg.CamTypes.EYE_CAM: None,
+              mg.CamTypes.CART_CAM: None,
+              mg.CamTypes.HEAD_CAM: None}
+
+imageId = 0
+fullScanDone = False
+
+def updateSharedScanLocationList():
+    msg = {'msgType': mg.SharedDataItems.ENVIRONMENT_SCAN_LOCATION, 'sender':processName,
+           'info': scanLocationListLocal}
+    updateSharedDict(msg)
+
+def updateSharedDict(msg):
+    #log(f"updateSharedDict, {msg=}")
+    if not marvinShares.updateSharedData(msg):
+        log(f"connection with shared data lost, going down") # connection to marvinData lost, try to reconnect
+        os._exit(1)
+
 
 #cams = {}       # dict of dict of cam properties received from cartControl
 
@@ -42,10 +58,10 @@ skeletonCommandMethods = skeletonCommandMethods.SkeletonCommandMethods()
 #headcamImage = None
 
 # use threadProcessImages to look for markers or add depth information to map
-flagProcessCartcamImage = False
-flagProcessEyecamImage = False
-flagProcessHeadcamImage = False
-flagProcessDepthcamImage = False
+#flagProcessCartcamImage = False
+#flagProcessEyecamImage = False
+#flagProcessHeadcamImage = False
+#flagProcessDepthcamImage = False
 
 # temporary values for addPartialMap as it runs in separate thread
 depthCamDistances = None
@@ -110,8 +126,8 @@ oLeftArm = None
 rightArm = {'omoplate': 0, 'shoulder': 0, 'rotate': 0, 'bicep': 0}
 oRightArm = None
 
-head = {}
-oHead =  None
+#head = {}
+head =  None
 
 
 
@@ -162,7 +178,7 @@ class Direction(Enum):
     ROTATE_RIGHT = 10
 
 
-class cCart:
+class Cart:
     cartX = 0
     cartY = 0
     cartYaw = 0
@@ -194,10 +210,10 @@ class cCart:
     def getCartYaw(self):
         return int(round(self.cartYaw + self.platformImuYawCorrection))
 
-oCart = cCart()     # only 1 cart object
+cart = Cart()     # only 1 cart object
 
 
-class cHead:
+class Head:
     isHeadImuCalibrated = False     # needs cart and servo connection
     isHeadImuCalibrationInitialized = False     # needs cart and servo connection
     headImuYawCorrection = 0
@@ -214,7 +230,7 @@ class cHead:
         self.isHeadImuCalibrationInitialized = False
 
     def setHeadOrientation(self, values):
-        thisYaw = (values[0] + self.headImuYawCorrection + oCart.getCartYaw()) % 360
+        thisYaw = (values[0] + self.headImuYawCorrection + cart.getCartYaw()) % 360
         if thisYaw < 180:
             self.headYaw = thisYaw
         else:
@@ -226,10 +242,10 @@ class cHead:
     def getHeadRoll(self): return self.headRoll
     def getHeadPitch(self): return self.headPitch
 
-oHead = cHead()     # only 1 instance
+head = Head()     # only 1 instance
 
 
-class cTarget:
+class Target:
     _x : int = 0
     _y : int = 0
     mapColor = (0,255,255)     # yellow
@@ -247,12 +263,13 @@ class cTarget:
         return self._y
 
 
-oTarget = cTarget()     # only 1 target object
+target = Target()     # only 1 target object
 
 
 # a sequence of cart moves that can be interrupted and continued
-oMoveSteps = None
+moveSteps = None
 
+"""
 from dataslots import with_slots
 from dataclasses import dataclass
 
@@ -278,7 +295,7 @@ class cMarker:
             if not name.startswith('__') and not inspect.ismethod(value):
                 pr[name] = value
         return pr
-
+"""
 
 class CartError(Exception):
     """
@@ -338,12 +355,12 @@ def createObjectViews():
 def log(msg, publish=True):
     msg = f"navManager - " + msg
     if publish:
-        print(f"{str(dt.now())[11:22]} {msg}")
+        print(f"{str(dt.now())[11:23]} {msg}")
     logging.info(msg)
 
 
 def othersLog(msg):
-    print(f"{str(dt.now())[11:22]} {msg}")
+    print(f"{str(dt.now())[11:23]} {msg}")
     logging.info(msg)
 
 
@@ -365,8 +382,8 @@ def distDegToScanPos(index):
     """
     from the current cart position calc distance and degree to any other scan position
     """
-    dx = scanLocations[index][0] - oCart.getCartX()
-    dy = scanLocations[index][1] - oCart.getCartY()
+    dx = scanLocationListLocal[index][0] - cart.getCartX()
+    dy = scanLocationListLocal[index][1] - cart.getCartY()
     directionDegrees = np.degrees(np.arctan2(dx, dy))
     distance = np.hypot(dx, dy)
     return (directionDegrees, distance)
@@ -416,5 +433,14 @@ def signedAngleDifference(start, end):
     return int(round(sign * value))
 
 
+def getCartLocation() -> mg.Location:
+    return marvinShares.cartDict.get(mg.SharedDataItems.CART_LOCATION)
 
+def getRoomData() -> environmentClasses.RoomData:
+    return marvinShares.environmentDict.get(mg.SharedDataItems.ENVIRONMENT_ROOM)
 
+def getScanLocationList() -> environmentClasses.ScanLocationList:
+    return marvinShares.environmentDict.get(mg.SharedDataItems.ENVIRONMENT_SCAN_LOCATION_LIST)
+
+def getMarkerList() -> environmentClasses.MarkerList:
+    return marvinShares.environmentDict.get(mg.SharedDataItems.ENVIRONMENT_MARKER_LIST)

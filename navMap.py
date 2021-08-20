@@ -10,19 +10,16 @@ import cv2
 #from pyrecord import Record
 from skimage.morphology import skeletonize
 
-import inmoovGlobal
+
 import config
-#import rpcSend
-import robotHandling
-import marker
-import guiUpdate
 import cartHandling
 import navManager
 
 from marvinglobal import marvinglobal as mg
+from marvinglobal import environmentClasses
 import sharedDataUpdate
 
-import threadProcessImages
+#import threadProcessImages
 import sharedDataUpdate
 
 MM_PER_MAP_PIXEL = 20       # each pixel in the map represents a 20x20 mm square
@@ -46,10 +43,20 @@ def clearFloorPlan():
 
     config.roomDataLocal.roomName = "unknown"
     config.roomDataLocal.fullScanDone = False
-    config.environment.saveRoomInfo()
+    msg = {'msgType': mg.SharedDataItems.ENVIRONMENT_ROOM, 'sender':config.processName,
+           'info': config.roomDataLocal}
+    config.updateSharedDict(msg)
 
-    config.scanLocations.reset()
-    config.markerList.reset()
+    config.scanLocationListLocal.reset()
+    msg = {'msgType': mg.SharedDataItems.ENVIRONMENT_SCAN_LOCATION_LIST, 'sender':config.processName,
+           'info': config.scanLocationListLocal}
+    config.updateSharedDict(msg)
+
+    config.markerListLocal.reset()
+    msg = {'msgType': mg.SharedDataItems.ENVIRONMENT_MARKER_LIST, 'sender':config.processName,
+           'info': config.markerListLocal}
+    config.updateSharedDict(msg)
+
 
 
 
@@ -84,7 +91,7 @@ def buildImageName(x, y, degrees=None, pitch=None):
     nY = f"{round(y / 100) * 100:+05d}"
     ndegrees = f"{round(degrees / 5) * 5:+04d}" if degrees is not None else ""
     nPitch = f"{pitch:+04d}" if pitch is not None else ""
-    return f"{nX}{nY}{ndegrees}{nPitch}"
+    return f"x{nX}_y{nY}_yaw{ndegrees}_pit{nPitch}"
 
 """
 def loadScanLocations():
@@ -105,92 +112,17 @@ def addScanLocation():
     """
     add the rounded cart position as scan location
     """
-    locX = round(config.oCart.getCartX() / 100) * 100
-    locY = round(config.oCart.getCartY() / 100) * 100
-    loc = (locX, locY)
+    scanLocation = config.marvinShares.cartDict.get(mg.SharedDataItems.CART_LOCATION)
 
-    if not loc in config.scanLocations:
-        config.scanLocations.append(loc)
-        config.log(f"new scan location added: {loc}")
+    if scanLocation not in config.scanLocationListLocal:
+        config.scanLocationListLocal.addScanLocation(scanLocation)
+        config.log(f"new scan location added: {scanLocation}")
 
-    saveScanLocations()
+    # update the data share
+    config.updateSharedScanLocationList()
 
-
-def takeDepthcamImage(show=False):
-
-    config.depthcamImage = rpcSend.getImage(inmoovGlobal.HEAD_DEPTH)
-    if config.depthcamImage is None:
-        config.log(f"WARNING: could not acquire depthcam image")
-        return False
-
-    if config.depthcamImage is not None:
-        config.flagProcessDepthcamImage = True      # signal for threadProcessImages
-
-        if show:
-            cv2.imshow("depthcam", config.depthcamImage)
-            cv2.waitKey(0)
-            cv2.destroyAllWindows()
-
-    return True
-
-
-def takeHeadcamImage(show=False):
-
-    config.headcamImage = rpcSend.getImage(inmoovGlobal.HEAD_RGB)
-    if config.headcamImage is None:
-        config.log(f"WARNING: could not acquire headcam image")
-        return False
-
-    if config.headcamImage is not None:
-        config.flagProcessHeadcamImage = True
-
-        if show:
-            cv2.imshow("headcam", config.headcamImage)
-            cv2.waitKey(0)
-            cv2.destroyAllWindows()
-
-    return True
-
-
-def takeEyecamImage(show=False):
-
-    config.eyecamImage = rpcSend.getImage(inmoovGlobal.EYE_CAM)
-    if config.eyecamImage is None:
-        config.log(f"WARNING: could not acquire eyecam image")
-        return False
-
-    if config.eyecamImage is not None:
-        config.flagProcessEyecamImage = True
-
-        if show:
-            cv2.line(config.cartcamImage, (320,0),(320,479),255,2)
-            cv2.imshow("cartCam", config.cartcamImage)
-            cv2.waitKey(0)
-            cv2.destroyAllWindows()
-
-    return True
-
-
-def takeCartcamImage(show=False):
-
-    config.cartcamImage = rpcSend.getImage(inmoovGlobal.CART_CAM)
-    if config.cartcamImage is None:
-        config.log(f"WARNING: could not acquire cartcam image")
-        return False
-
-    if config.cartcamImage is not None:
-        config.flagProcessCartcamImage = True
-
-        if show:
-            cv2.line(config.cartcamImage, (320,0),(320,479),255,2)
-            cv2.imshow("cartCam", config.cartcamImage)
-            cv2.waitKey(0)
-            cv2.destroyAllWindows()
-
-    return True
-
-
-
+    # persist scanLocationList
+    config.scanLocationListLocal.saveScanLocationList()
 
 
 
@@ -287,7 +219,7 @@ def findNewScanLocation():
     Based on the current cart position define the max distance to the map corners.
     This limits the range we have to look for obstacles
     '''
-    mapX, mapY = evalMapLocation(config.oCart.getCartX(), config.oCart.getCartY())
+    mapX, mapY = evalMapLocation(config.cart.getCartX(), config.cart.getCartY())
     maxProbeDistance = evalMaxProbeDistance(mapX, mapY)
     
     # in maxProbeDistance range check for obstacle-free cart position
@@ -351,7 +283,7 @@ def findNewScanLocation():
     # find the longest free move, index of farthest candidate spot
     idxCandidate = int(np.argmax(candidateSpot))
 
-    mapX, mapY = evalMapLocation(config.oCart.getCartX(), config.oCart.getCartY())
+    mapX, mapY = evalMapLocation(config.cart.getCartX(), config.cart.getCartY())
 
     if showEval:
         #config.log(f"idxCandidate: {idxCandidate}, targetPosMap = {checkPosMapX[idxCandidate], checkPosMapY[idxCandidate]}")
@@ -387,7 +319,7 @@ def findNewScanLocation():
         #config.log(f"new scan location found, degree: {int(targetInMapDegree)}, distance: {int(distanceMm)}, cartX: {cartX}, cartY: {cartY}")
         config.log(f"new scan location found, degree: {int(targetInMapDegree)}, "
                    f"distance: {int(distanceMm)}, "
-                   f"cartX: {config.oCart.getCartX()}, cartY: {config.oCart.getCartY()}")
+                   f"cartX: {config.cart.getCartX()}, cartY: {config.cart.getCartY()}")
 
         # return the candidate angle and distance (absolute map value)
         return (targetInMapDegree, distanceMm)
@@ -418,7 +350,7 @@ def rebuildMap():
                 time.sleep(0.5)
             if time.time() > timeout:
                 config.log(f"timeout addPartialMapDone")
-                navManager.setTask("notask")
+                navManager.setTask("add partial map failed", "notask")
         else:
             continue
 
@@ -530,8 +462,8 @@ def createImageFolders():
     create new empty room folders
     :return:
     """
-    config.log(f"move current room to _depricated folder")
-    roomFolder = f"{mg.PERSISTED_DATA_FOLDER}/{mg.ROOM_FOLDER}/{config.environment}"
+    roomName = config.getRoomData().roomName
+    roomFolder = f"{mg.PERSISTED_DATA_FOLDER}/{mg.ROOM_FOLDER}/{roomName}"
     if os.path.exists(roomFolder):
         if os.path.exists(roomFolder+"_depricated"):
             config.log(f"remove _depricated folder")
@@ -567,9 +499,9 @@ def createImageFolders():
     if not os.path.exists(floorPlanPartsFolder):
         os.makedirs(floorPlanPartsFolder)
 
-    wallImagesFolder = f"{roomFolder}/wallImages"
-    if not os.path.exists(wallImagesFolder):
-        os.makedirs(wallImagesFolder)
+    eyecamImagesFolder = f"{roomFolder}/eyecamImages"
+    if not os.path.exists(eyecamImagesFolder):
+        os.makedirs(eyecamImagesFolder)
 
     cartcamImagesFolder = f"{roomFolder}/cartcamImages"
     if not os.path.exists(cartcamImagesFolder):
@@ -601,8 +533,6 @@ def createFloorPlan():
     # until we have a map update function start with a clear floor plan
     clearFloorPlan()
 
-    sharedDataUpdate.publishCartLocation()
-
     return True
 
 
@@ -616,7 +546,7 @@ def rover():
 
             if cartHandling.createMoveSequence(absDegree, distance, 200):
                 if cartHandling.moveCart():
-                    navManager.setTask("pop")
+                    navManager.setTask("cart move done", "pop")
                     return
             else:
                 config.log(f"move to new scan location failed")
@@ -628,7 +558,7 @@ def rover():
     #except Exception as e:
     #    config.log(f"rover, unexpected exception in rover: {e}")
 
-    navManager.setTask("notask")
+    navManager.setTask("rover done", "notask")
     return
 
 

@@ -4,12 +4,9 @@ import numpy as np
 import cv2
 
 import config
-import robotHandling
-import rpcSend
 import navManager
 import navMap
 import cartHandling
-import aruco
 
 
 SIDE_MOVE_SPEED = 150
@@ -66,37 +63,37 @@ def moveToDockingStartPosition(dockMarker):
         # orthogonal position is <distanceCartToTarget> away from marker
         xCorr = DOCKING_START_DISTANCE_FROM_MARKER * np.cos(np.radians(dockMarker.markerYaw + 90))
         yCorr = DOCKING_START_DISTANCE_FROM_MARKER * np.sin(np.radians(dockMarker.markerYaw + 90))
-        config.oTarget.setCartX(dockMarker.markerX + xCorr)
-        config.oTarget.setCartY(dockMarker.markerY + yCorr)
+        config.target.setCartX(dockMarker.markerX + xCorr)
+        config.target.setCartY(dockMarker.markerY + yCorr)
 
         # at target rotate cart to face marker
         # calculate angle from target position to marker position
         endDegrees = np.degrees(np.arctan2(xCorr, yCorr))
 
         # find abs degreesCartToTarget from current cart position to target position
-        xDiff = config.oTarget.getCartX() - config.oCart.getCartX()
-        yDiff = config.oTarget.getCartY() - config.oCart.getCartY()
+        xDiff = config.target.getCartX() - config.cart.getCartX()
+        yDiff = config.target.getCartY() - config.cart.getCartY()
         degreesCartToTarget = int(round(np.degrees(np.arctan2(yDiff,xDiff))))
         distanceCartToTarget = int(round(np.hypot(xDiff, yDiff)))
 
         # in addition calculate the end rotation for the cart to face the marker
-        xDiffTargetToMarker = dockMarker.markerX - config.oTarget.getCartX()
-        yDiffTargetToMarker = dockMarker.markerY - config.oTarget.getCartY()
+        xDiffTargetToMarker = dockMarker.markerX - config.target.getCartX()
+        yDiffTargetToMarker = dockMarker.markerY - config.target.getCartY()
         degreesTargetToMarker = int(round(np.degrees(np.arctan2(yDiffTargetToMarker,xDiffTargetToMarker))))
         distanceTargetToMarker = int(round(np.hypot(xDiffTargetToMarker, yDiffTargetToMarker)))
 
         # log values
-        config.log(f"cart,   X: {config.oCart.getCartX()}, Y: {config.oCart.getCartY()}, degrees: {config.oCart.getCartYaw()}")
-        config.log(f"target, X: {config.oTarget.getCartX()}, Y: {config.oTarget.getCartY()}, degreesCartToTarget: {degreesCartToTarget}")
+        config.log(f"cart,   X: {config.cart.getCartX()}, Y: {config.cart.getCartY()}, degrees: {config.cart.getCartYaw()}")
+        config.log(f"target, X: {config.target.getCartX()}, Y: {config.target.getCartY()}, degreesCartToTarget: {degreesCartToTarget}")
         config.log(f"move distanceCartToTarget: {distanceCartToTarget}, degreesCartToTarget: {degreesCartToTarget}")
         config.log(f"cart end degreesCartToTarget: {degreesTargetToMarker}, distanceCartToTarget cart to marker: {distanceTargetToMarker}")
 
         # visualise docking move
         dockMap = cv2.cvtColor(config.floorPlan, cv2.COLOR_GRAY2RGB)
         navMap.addCenter(dockMap)
-        navMap.addCart(dockMap, config.oCart.getCartX(), config.oCart.getCartY(), config.oCart.getCartYaw(), config.oCart.mapColor)
+        navMap.addCart(dockMap, config.cart.getCartX(), config.cart.getCartY(), config.cart.getCartYaw(), config.cart.mapColor)
         navMap.addMarker(dockMap, dockMarker.markerX, dockMarker.markerY, dockMarker.markerYaw)
-        navMap.addCart(dockMap, config.oTarget.getCartX(), config.oTarget.getCartY(), degreesTargetToMarker, config.oTarget.mapColor)
+        navMap.addCart(dockMap, config.target.getCartX(), config.target.getCartY(), degreesTargetToMarker, config.target.mapColor)
         navMap.addPathToTarget(dockMap)     # line from cartPosition to targetPosition
 
         cv2.imshow("docking", dockMap)
@@ -106,7 +103,7 @@ def moveToDockingStartPosition(dockMarker):
         # check for cart position close to target
         if distanceCartToTarget < 100:
             config.log(f"cart is already close to docking detail start point, do not move cart")
-            degreesCartToTarget = config.oCart.getCartYaw()
+            degreesCartToTarget = config.cart.getCartYaw()
         else:
 
             if distanceCartToTarget < 500:
@@ -124,7 +121,7 @@ def moveToDockingStartPosition(dockMarker):
                     return False
 
         # end rotation to face marker
-        relativeEndRotation = config.signedAngleDifference(config.oCart.getCartYaw(), degreesTargetToMarker)
+        relativeEndRotation = config.signedAngleDifference(config.cart.getCartYaw(), degreesTargetToMarker)
         config.log(f"relative end rotation to face marker: {relativeEndRotation}")
         if abs(relativeEndRotation) > 2:
             cartHandling.rotateCartRelative(relativeEndRotation)
@@ -169,7 +166,7 @@ def alignWithMarker(sideMoveOnly=False):
                 distance = markerInfo[0]['distanceCamToMarker']
                 config.log(f"first rotate cart to be orthogonal with marker {markerYaw}")
                 if abs(markerYaw) > markerYawRotationThreshold:
-                    if cartHandling.createMoveSequence(config.oCart.getCartYaw() - markerYaw, 0, 180,
+                    if cartHandling.createMoveSequence(config.cart.getCartYaw() - markerYaw, 0, 180,
                                                        DOCKING_ROTATION_THRESHOLD, DOCKING_MOVE_THRESHOLD):
                         adjustCart = True
                         moveSuccess = cartHandling.moveCart()
@@ -218,14 +215,14 @@ def detailDockMoves():
     moveThreshold = 20
     moveDistance = distance - 300
     if abs(moveDistance) > moveThreshold:
-        if cartHandling.createMoveSequence(config.oCart.getCartYaw(), moveDistance, DOCKING_SPEED, cartMoveMonitoring=False):
+        if cartHandling.createMoveSequence(config.cart.getCartYaw(), moveDistance, DOCKING_SPEED, cartMoveMonitoring=False):
             cartHandling.moveCart()
 
     # step closer and verify distance
     distance = alignWithMarker()
     if distance is None:
         config.log(f"lost marker during detailDockMoves, docking failed in step2")
-        navManager.setTask('notask')
+        navManager.setTask("lost marker",'notask')
         return
 
     moveDistance = distance - 200
@@ -237,7 +234,7 @@ def detailDockMoves():
     distance = alignWithMarker(sideMoveOnly=True)
     if distance is None:
         config.log(f"lost marker during detailDockMoves, docking failed in step3")
-        navManager.setTask('notask')
+        navManager.setTask("lost marker", 'notask')
         return
 
     moveDistance = distance - 100
@@ -245,7 +242,7 @@ def detailDockMoves():
         cartHandling.moveCartWithDirection(config.Direction.FORWARD, moveDistance, DOCKING_SPEED,
                                            DOCKING_ROTATION_THRESHOLD, DOCKING_MOVE_THRESHOLD, cartMoveMonitoring=False)
 
-    navManager.setTask('notask')
+    navManager.setTask("docked",'notask')
 
 
 

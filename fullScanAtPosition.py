@@ -4,66 +4,73 @@ import numpy as np
 
 from marvinglobal import marvinglobal as mg
 from marvinglobal import skeletonClasses
-from marvinglobal import cartClasses
-from marvinglobal import skeletonCommandMethods
+#from marvinglobal import cartClasses
+#from marvinglobal import skeletonCommandMethods
 
 import config
-import marker
+import imageHandler
+import skeletonHandling
+import cartHandling
 import navMap
 
+# for full scan at position
+# list of neck positions and camera to use for each head rotation position
+# list in order of neg to pos neckAngles
+neckAngles = [{"neckAngle": mg.pitchLowerDegrees, "camType": mg.CamTypes.EYE_CAM},
+              {"neckAngle": mg.pitchWallWatchDegrees, "camType": mg.CamTypes.HEAD_CAM},
+              {"neckAngle": mg.pitchUpperDegrees, "camType": mg.CamTypes.EYE_CAM},
+              ]
 
-neckAngles = [{"neckAngle": mg.pitchWallWatchDegrees, "cam": mg.CamTypes.HEAD_CAM},
-              {"neckAngle": 0, "cam": mg.CamTypes.EYE_CAM},
-              {"neckAngle": -20, "cam": mg.CamTypes.EYE_CAM}]
 
-
-def setupEyeCamViewDirection(self):
+def setupEyeCamViewDirection():
     """
-    move head into position for taking wall pictures, make sure neck stays at position
+    make sure neck stays at position and set eyes direction straight out
     """
-    config.log(f"set neck autoDetach to 5 sec")
-    request = {'cmd': 'setAutoDetach', 'sender': config.processName,
-               'servoName': 'head.neck', 'duration': 5000}
+    config.log(f"set neck autoDetach to 15 sec")
+    request = {'msgType': 'setAutoDetach', 'sender': config.processName,
+               'servoName': 'head.neck', 'duration': 15000}
     config.marvinShares.skeletonRequestQueue.put(request)
 
-    request = {'cmd': 'requestDegrees', 'sender': config.processName,
-               'servoName': 'head.neck', 'degrees': mg.pitchWallWatchDegrees, 'duration': 1000, 'sequential': True}
-    config.marvinShares.skeletonRequestQueue.put(request)
-
-    request = {'cmd': 'requestDegrees', 'sender': config.processName,
-               'servoName': 'head.rothead', 'duration': 1000}
-    config.marvinShares.skeletonRequestQueue.put(request)
+    # set eye direction straight out
+    skeletonHandling.requestServoDegrees('head.eyeX', 0, duration=100, wait=True)
+    skeletonHandling.requestServoDegrees('head.eyeY', 0, duration=100, wait=True)
 
 
-def scanWithHead(startDegrees, endDegrees, steps, lookForMarkers=None):
+def scanWithHead(startDegrees, endDegrees, steps, lookForMarkers=None) -> bool:
 
+    sequenceNumber = 0
     if lookForMarkers is None:      # avoid mutable default value lookForMarkers=[]
         lookForMarkers = []
 
     # create a list of head rotations for the requested scan
     rotheadDegreesList = list(np.linspace(startDegrees, endDegrees, steps))
+    config.log(f"{rotheadDegreesList=}")
 
     # create a list of neck positions for each head yaw
     neckDegreesList = list(neckAngles)
+    config.log(f"{neckDegreesList=}")
 
-    # before starting to loop over all rothead and neck positions find shorter way to start with
-    rotheadCurrent:skeletonClasses.ServoCurrent = config.marvinShares.servoCurrentDict.get('head.rothead')
-    if rotheadCurrent.degrees < 90:
+    #---------------------------------------------------------------------------------------------
+    # before starting to loop over all rothead and neck positions find shortest way to start with
+    #---------------------------------------------------------------------------------------------
+    servoCurrentDict = config.marvinShares.servoDict.get(mg.SharedDataItems.SERVO_CURRENT)
+    rotheadCurrent:skeletonClasses.ServoCurrent = servoCurrentDict.get('head.rothead')
+
+    if rotheadCurrent.currentDegrees > 0:
         rotheadDegreesList.reverse()
 
-    neckCurrent:skeletonClasses.ServoCurrent = config.marvinShares.servoCurrentDict.get('head.neck')
-    if neckCurrent.degrees < 90:
+    neckCurrent:skeletonClasses.ServoCurrent = servoCurrentDict.get('head.neck')
+    if neckCurrent.currentDegrees > -5:
         neckDegreesList.reverse()
 
+    # ---------------------------------------------------------------------------------------------
 
     while len(rotheadDegreesList) > 0:
 
         requestedHeadYaw = int(rotheadDegreesList.pop())
-        request = {'cmd': 'requestDegrees', 'sender': config.processName,
-                   'servoName': 'head.rothead', 'degrees': requestedHeadYaw, 'duration': 250, 'sequential': True}
-        config.marvinShares.skeletonRequestQueue.put(request)
-
-        time.sleep(0.2)     # make sure head is at full stop and not shaking
+        if not skeletonHandling.requestServoDegrees('head.rothead', requestedHeadYaw, duration=300, wait=True):
+            config.log(f"stop scan, head.rothead not positioned")
+            return False
 
         cartLocation:mg.Location = config.marvinShares.cartDict.get(mg.SharedDataItems.CART_LOCATION)
         camDegrees = requestedHeadYaw
@@ -73,74 +80,75 @@ def scanWithHead(startDegrees, endDegrees, steps, lookForMarkers=None):
         # with same rothead position use a upper and lower neck position for marker scan
         for neckPos in neckDegreesList:
 
-            # take depth only in rothead 0 position
-            if requestedHeadYaw == 0 and neckPos['cam'] != mg.CamTypes.HEAD_CAM:
+            # take depth image only in rothead 0 position
+            if requestedHeadYaw != 0 and neckPos['camType'] == mg.CamTypes.HEAD_CAM:
                 continue
 
-            request = {'cmd': 'requestDegrees', 'sender': config.processName,
-                       'servoName': 'head.neck', 'degrees': neckPos['neckAngle'], 'duration': 600, 'sequential': True}
-            config.marvinShares.skeletonRequestQueue.put(request)
+            if not skeletonHandling.requestServoDegrees('head.neck', neckPos['neckAngle'], duration=300, wait=True):
+                config.log(f"stop scan, could not position head.neck in time")
+                return False
 
-
-            if neckPos['cam'] == mg.CamTypes.EYE_CAM:
-                config.log(f"take eyecam image: rothead: {requestedHeadYaw}, neck: {neckPos['neckAngle']}")
+            if neckPos['camType'] == mg.CamTypes.EYE_CAM:
 
                 imageName = navMap.buildImageName(cartLocation.x, cartLocation.y, absDegreeImage, neckPos['neckAngle'])
-                filename = f"{config.PATH_ROOM_DATA}/{config.environment}/wallImages/{imageName}.jpg"
+                environment = config.getRoomData()
+                filename = f"{config.PATH_ROOM_DATA}/{environment.roomName}/eyecamImages/{imageName}.jpg"
 
-                request = {'cmd': mg.ImageProcessingCommands.TAKE_IMAGE, 'sender': config.processName,
-                           'cam': mg.CamTypes.EYE_CAM, 'imgPath': filename, 'show': True}
-                config.marvinShares.imageProcessingQueue.put(request)
+                config.log(f"request TAKE_IMAGE with EYE_CAM, rothead: {requestedHeadYaw}, neck: {neckPos['neckAngle']}, imageId: {config.imageId}")
 
-                # über rückmeldung an navManager lösen
-                #if config.eyecamImage is None:
-                #    config.log(f"WARNING: could not acquire an eyecam image, stop current task")
-                #    return False
+                # try to take image and check for any aruco markers
+                request = {'msgType': mg.ImageProcessingCommands.TAKE_IMAGE, 'sender': config.processName,
+                           'camType': mg.CamTypes.EYE_CAM, 'imgPath': filename, 'show': False, 'findMarkers':[],
+                           'checkBlurThreshold': True, 'maxWaitMs': 1000}
 
+                # create image request object and send request to imageProcessing
+                config.camRequest[request['camType']] = imageHandler.ImageRequest(request, timeout=7)
 
-                config.log(f"check for marker with headdegrees: {int(requestedHeadYaw)}, cartDegrees: {config.oCart.getCartYaw()}")
+                # wait for result from imageProcessing (includes detection of aruco markers)
+                config.camRequest[request['camType']].waitForResult()
+                if not config.camRequest[request['camType']].isImageAvailable():
+                    config.log(f"stop scan, eyeCamRequest failed, stop scan")
+                    return False
 
-                # über rückmeldung von imageProcessing an navManager lösen
-                """
-                markersFound = aruco.lookForMarkers("EYE_CAM", [], config.oHead.getHeadYaw())
-                # result =  list of {'markerId', 'distanceCamToMarker', 'angleInImage', 'markerYaw'}
-
-                if markersFound:
-                    config.log(f"markers found: {markersFound}")
-                    updateMarkerFoundResult(markersFound, 'EYE_CAM', config.oCart.getCartX(), config.oCart.getCartY(), cartDegrees, camDegrees)
-
-                    #print(navGlobal.markerList)
-                    # stop scan if we have found a requested marker
-                    for markerInfo in markersFound:
-                        if markerInfo['markerId'] in lookForMarkers:
-                            config.log(f"requested marker found, markerId: {markerInfo['markerId']}")
+                # check for scan for specific marker[s]
+                if len(lookForMarkers) > 0:
+                    # stop scan if we have found one of the requested markers
+                    markerList = config.getMarkerList()
+                    for marker in markerList:
+                        if marker in lookForMarkers:
+                            config.log(f"requested marker found, markerId: {marker}")
                             break
-                else:
-                    config.log(f"no markers found")
-                """
 
-            if neckPos['cam'] == mg.CamTypes.HEAD_CAM:
-                config.log(f"take depth image: rothead: {requestedHeadYaw}, neck: {neckPos['neckAngle']}")
+                    config.log(f"requested marker[s] not found yet")
 
-                request = {'cmd': mg.ImageProcessingCommands.TAKE_IMAGE, 'sender': config.processName,
-                           'cam': mg.CamTypes.HEAD_CAM, 'show': True}
-                config.marvinShares.imageProcessingQueue.put(request)
 
-                # über rückmeldung an sender lösen
-                #if inmoovDepthImg is None:
-                #    config.log(f"WARNING: could not acquire a depth image, stop current task")
-                #    return False
-                #else:
+            if neckPos['camType'] == mg.CamTypes.HEAD_CAM:
+                config.log(f"request TAKE_IMAGE with HEAD_CAM, rothead: {requestedHeadYaw}, neck: {neckPos['neckAngle']}, imageId: {config.imageId}")
+                imageName = f"x{cartLocation.x}_y{cartLocation.y}_yaw{cartLocation.yaw}"
+                environment = config.getRoomData()
+                filename = f"{config.PATH_ROOM_DATA}/{environment.roomName}/headcamImages/{imageName}.jpg"
+
+                request = {'msgType': mg.ImageProcessingCommands.TAKE_IMAGE, 'sender': config.processName,
+                           'camType': mg.CamTypes.HEAD_CAM, 'show': False, 'checkBlurThreshold': False, 'maxWaitMs': 5000, 'imgPath': filename}
+
+                config.camRequest[request['camType']] = imageHandler.ImageRequest(request, timeout=8)
                 #    config.log(f"TODO: do something with the depth image")
 
-            neckDegreesList.reverse()       # continue with same neck position as in last rothead position
+                config.camRequest[request['camType']].waitForResult()
+                if not config.camRequest[request['camType']].isImageAvailable():
+                    config.log(f"stop scan, headCamRequest failed, stop scan")
+                    return False
+
+        # for current rothead position all neck positions done
+        neckDegreesList.reverse()       # continue with same neck position as in last rothead position
 
     config.log(f"scan with head done")
+    return True
 
 
 def fullScanAtPosition(lookForMarkers=None):
     """
-    will start at current cart position and degrees
+    will start at current cart position and cart direction
     takes with different head rotation/neck angles rgb images and scans them for markers
     with head rotation angle 0 takes a depth image and creates the obstacle line
     after a full head scan rotates the cart (around center of cart)
@@ -158,14 +166,14 @@ def fullScanAtPosition(lookForMarkers=None):
     if lookForMarkers is None:      # python issue, a mutable default param lookForMarkers=[] raises an error
         lookForMarkers = []
 
-    startAngleCart = config.cartLocationLocal.yaw
+    startAngleCart = config.getCartLocation().yaw
 
     # move InMoov eye cam into capturing pose
     setupEyeCamViewDirection()
 
     # eval number of necessary cart rotations to get a full circle
     # use the fovH of the HEAD cam
-    headFovH = mg.headCamProperties['fovH']
+    headFovH = 60   #HEAD_CAM.fovH
     numPlannedCartRotationSteps = int(360 / headFovH)
     cartRange = int(360 / (numPlannedCartRotationSteps + 1))
 
@@ -174,44 +182,41 @@ def fullScanAtPosition(lookForMarkers=None):
     config.fullScanPlanFat = np.zeros_like(config.fullScanPlan)
 
     # for all orientations of the cart
-    eyeFovH = mg.eyeCamProperties['fovH']
+    eyeFovH = 12 #EYE_CAM.fovH
     numPlannedHeadRotationSteps = int(cartRange / eyeFovH)
     headRange = int(cartRange / (numPlannedHeadRotationSteps + 1))
 
     while numPlannedCartRotationSteps > 0:
 
         # request a cartcam picture from imageProcessing
-        config.log(f"take cartcam image, degrees: {config.oCart.getCartYaw()}")
-        request = {'cmd': mg.ImageProcessingCommands.TAKE_IMAGE, 'sender': config.processName,
-                   'cam': mg.CamTypes.EYE_CAM}
-        config.marvinShares.imageProcessingRequestQueue.put(request)
+        config.log(f"request TAKE_IMAGE with CART_CAM, imageId: {config.imageId}")
+        cartLocation: mg.Location = config.marvinShares.cartDict.get(mg.SharedDataItems.CART_LOCATION)
+        imageName = f"x{cartLocation.x}_y{cartLocation.y}_yaw{cartLocation.yaw}"
+        environment = config.getRoomData()
+        filename = f"{config.PATH_ROOM_DATA}/{environment.roomName}/cartcamImages/{imageName}.jpg"
 
+        request = {'msgType': mg.ImageProcessingCommands.TAKE_IMAGE, 'sender': config.processName,
+                   'camType': mg.CamTypes.CART_CAM, 'checkBlurThreshold': True, 'maxWaitMs': 3000, 'imgPath': filename}
+        config.camRequest[request['camType']] = imageHandler.ImageRequest(request, timeout=8)
 
         # take several Eyecam images and one depth image with this cart orientation
         if scanWithHead(startDegrees= -cartRange/2 + headRange/2,
                             endDegrees=cartRange/2 - headRange/2,
                             steps=numPlannedHeadRotationSteps+1):
 
-            # check for image processing done
-            timeout = time.time() + 5
-            while config.flagProcessCartcamImage and time.time() < timeout:
-                time.sleep(0.1)
-            if time.time() > timeout:
-                config.log(f"navMap, timeout processing CartcamImage, stopping scan")
+            # for each rotation step we take a cart image
+            # check for success in take cart image
+            config.camRequest[mg.CamTypes.CART_CAM].waitForResult()
+            if not config.camRequest[mg.CamTypes.CART_CAM].isImageAvailable():
+                config.log(f"cartCamRequest failed, stop scan")
                 return False
 
-            while not config.flagProcessDepthcamImage and time.time() < timeout:
-                time.sleep(0.1)
-            if time.time() > timeout:
-                config.log(f"navMap, timeout processing DepthcamImage, stopping scan")
-                return False
 
-            guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP})
+            #guiUpdate.guiUpdateQueue.append({'type': guiUpdate.updType.MAP})
 
-            # rotate cart
+            # rotate cart by horizontal observation range of head cam
             numPlannedCartRotationSteps -= 1
-            depthXRange = config.cams[inmoovGlobal.HEAD_DEPTH]['fovH']
-            relAngle = 360 - (numPlannedCartRotationSteps * depthXRange)
+            relAngle = 360 - (numPlannedCartRotationSteps * headFovH)
             nextDegrees = (relAngle + startAngleCart) % 360
             config.log(f"start angle: {startAngleCart}, rotation steps: {numPlannedCartRotationSteps}, next degrees: {nextDegrees}")
 
@@ -223,7 +228,6 @@ def fullScanAtPosition(lookForMarkers=None):
                 except Exception as e:
                     config.log(f"failure in cart rotation to {nextDegrees} degrees, {e}")
                     return False
-
         else:
             config.log(f"scan with head failure")
             return False    # problems with scanWithHead
@@ -245,6 +249,7 @@ def fullScanAtPosition(lookForMarkers=None):
     # for additional full scans verify the alignment with the floor plan and adjust cart location
     if len(config.scanLocations) > 1:
         adjustCartLocation()
+
 
     addScanLocation()     # let us remember we have been here, use corrected position
 
